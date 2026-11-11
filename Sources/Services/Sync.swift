@@ -15,6 +15,23 @@ final class SyncMeta {
     }
 }
 
+/// Abgleich-Stand als einfache Datei (Schlüssel → Prüfsumme). Bewusst ohne SwiftData.
+enum SyncStateFile {
+    private static var url: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("sync-state.json")
+    }
+    static func load() -> [String: String] {
+        guard let d = try? Data(contentsOf: url) else { return [:] }
+        return (try? JSONDecoder().decode([String: String].self, from: d)) ?? [:]
+    }
+    static func save(_ state: [String: String]) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let d = try? JSONEncoder().encode(state) { try? d.write(to: url, options: .atomic) }
+    }
+    static func clear() { try? FileManager.default.removeItem(at: url) }
+}
+
 // MARK: - Verbindung (Supabase-URL, Schlüssel, Haushalt)
 
 struct SyncConfig: Codable, Equatable {
@@ -317,8 +334,7 @@ final class SyncEngine {
         config = c
         if let ctx = context {
             // Alles neu abgleichen
-            for m in (try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? [] { ctx.delete(m) }
-            try? ctx.save()
+            SyncStateFile.clear()
         }
         await sync(manual: true)
     }
@@ -329,8 +345,7 @@ final class SyncEngine {
         lastSync = nil
         lastError = nil
         if let ctx = context {
-            for m in (try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? [] { ctx.delete(m) }
-            try? ctx.save()
+            SyncStateFile.clear()
         }
     }
 
@@ -361,8 +376,7 @@ final class SyncEngine {
         guard let ctx = context else { return }
         UserDefaults.standard.removeObject(forKey: "sync.cursor")
         UserDefaults.standard.removeObject(forKey: "sync.crashStep")
-        for m in (try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? [] { ctx.delete(m) }
-        try? ctx.save()
+        SyncStateFile.clear()
         await sync(manual: true)
     }
 
@@ -512,7 +526,7 @@ final class SyncEngine {
         SyncTrace.step("Herunterladen: \(rows.count) Datensätze vergleichen")
         let local = Dictionary(localRecords(ctx).map { ($0.key, $0.hash) }, uniquingKeysWith: { a, _ in a })
         SyncTrace.step("Herunterladen: Stand laden")
-        let metas = Dictionary(((try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? []).map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        var state = SyncStateFile.load()
 
         SyncTrace.step("Herunterladen: Produkte & Vorlagen laden")
         var products = Dictionary(((try? ctx.fetch(FetchDescriptor<Product>())) ?? []).map { ($0.uuid, $0) }, uniquingKeysWith: { a, _ in a })
@@ -527,18 +541,18 @@ final class SyncEngine {
             guard let kind = RecordKind(rawValue: r.kind), kind != .shoppinglist else { continue }
             let key = "\(kind.rawValue):\(r.id.uuidString)"
             SyncTrace.step("Herunterladen: prüfen \(kind.rawValue) \(r.id.uuidString.prefix(8))")
-            let meta = metas[key]
+            let known = state[key]
             // Eigene, schon abgeglichene Daten nicht erneut einspielen.
-            if !r.deleted, let m = meta, let rh = normalizedHash(kind, r.data), m.hash == rh { continue }
+            if !r.deleted, let k = known, let rh = normalizedHash(kind, r.data), k == rh { continue }
             // Lokal geändert und noch nicht hochgeladen? Dann gewinnt die lokale Änderung.
-            if let lh = local[key], meta == nil || meta?.hash != lh {
+            if let lh = local[key], known != lh {
                 skipped.insert(key)
                 continue
             }
             if r.deleted {
                 SyncTrace.step("Löschen: \(kind.rawValue) \(r.id.uuidString.prefix(8))")
                 delete(kind, r.id, ctx, products: &products, templates: &templates)
-                if let meta { ctx.delete(meta) }
+                state[key] = nil
                 continue
             }
             SyncTrace.step("Einspielen: \(kind.rawValue) \(r.id.uuidString.prefix(8))")
@@ -550,17 +564,16 @@ final class SyncEngine {
         // Sync-Stand für alles Eingespielte festhalten
         SyncTrace.step("Stand merken")
         let afterLocal = Dictionary(localRecords(ctx).map { ($0.key, $0.hash) }, uniquingKeysWith: { a, _ in a })
-        let metasNow = Dictionary(((try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? []).map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         for r in sorted {
             guard let kind = RecordKind(rawValue: r.kind), kind != .shoppinglist, !r.deleted else { continue }
             let key = "\(kind.rawValue):\(r.id.uuidString)"
             guard let h = afterLocal[key] else { continue }
             if skipped.contains(key) { continue } // lokal geändert – wird gleich hochgeladen
             SyncTrace.step("Stand merken: \(kind.rawValue) \(r.id.uuidString.prefix(8))")
-            if let m = metasNow[key] { m.hash = h } else { ctx.insert(SyncMeta(key: key, hash: h)) }
+            state[key] = h
         }
+        SyncStateFile.save(state)
         if !newest.isEmpty { cursor = newest }
-        try? ctx.save()
     }
 
     private func apply(_ kind: RecordKind, _ id: UUID, _ data: Data, _ ctx: ModelContext,
@@ -699,16 +712,16 @@ final class SyncEngine {
         SyncTrace.step("Hochladen: lokal lesen")
         let records = localRecords(ctx, includeShoppingList: true)
         SyncTrace.step("Hochladen: Änderungen ermitteln")
-        let metaList = (try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? []
-        let metas = Dictionary(metaList.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        var state = SyncStateFile.load()
         let localKeys = Set(records.map(\.key))
 
         var changed: [LocalRecord] = []
-        for r in records where metas[r.key]?.hash != r.hash { changed.append(r) }
+        for r in records where state[r.key] != r.hash { changed.append(r) }
 
         var deletions: [(kind: String, id: UUID)] = []
-        for m in metaList where !localKeys.contains(m.key) {
-            let parts = m.key.split(separator: ":", maxSplits: 1).map(String.init)
+        let goneKeys = state.keys.filter { !localKeys.contains($0) }
+        for key in goneKeys {
+            let parts = key.split(separator: ":", maxSplits: 1).map(String.init)
             if parts.count == 2, let id = UUID(uuidString: parts[1]) { deletions.append((parts[0], id)) }
         }
 
@@ -718,10 +731,9 @@ final class SyncEngine {
         try await client.push(payload)
         SyncTrace.step("Hochladen: Stand merken")
 
-        for r in changed {
-            if let m = metas[r.key] { m.hash = r.hash } else { ctx.insert(SyncMeta(key: r.key, hash: r.hash)) }
-        }
-        for m in metaList where !localKeys.contains(m.key) { ctx.delete(m) }
+        for r in changed { state[r.key] = r.hash }
+        for key in goneKeys { state[key] = nil }
+        SyncStateFile.save(state)
     }
 
     /// Hash eines Server-Datensatzes im selben Format wie lokal (sortierte Schlüssel).

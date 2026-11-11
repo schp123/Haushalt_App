@@ -53,44 +53,81 @@ struct ChatMessage: Codable {
 }
 
 enum AssistantClient {
-    /// Mehrere Modelle durch Komma getrennt: bei Überlastung wird das nächste versucht.
-    static func complete(_ messages: [ChatMessage], config: AssistantConfig) async throws -> String {
-        try await complete(raw: messages.map { ["role": $0.role, "content": $0.content] }, config: config)
+    /// Überlastete Modelle werden ein paar Minuten lang hinten angestellt.
+    @MainActor private static var cooldown: [String: Date] = [:]
+    /// Modelle, die den Parameter „reasoning_effort“ nicht kennen.
+    @MainActor private static var noReasoningParam: Set<String> = []
+    /// Zuletzt erfolgreiches Modell – wird zuerst versucht.
+    @MainActor private static var lastGood: String?
+
+    static func complete(_ messages: [ChatMessage], config: AssistantConfig, timeout: TimeInterval = 15) async throws -> String {
+        try await complete(raw: messages.map { ["role": $0.role, "content": $0.content] }, config: config, timeout: timeout)
     }
 
-    /// Nachrichten im OpenAI-Format, z. B. mit Bild: ["role": "user", "content": [[type: text …], [type: image_url …]]]
-    static func complete(raw messages: [[String: Any]], config: AssistantConfig) async throws -> String {
-        let models = config.model.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    /// Mehrere Modelle durch Komma getrennt. Bei Überlastung, Fehler oder zu langer Antwortzeit
+    /// geht es sofort zum nächsten Modell – ohne Wartepause.
+    @MainActor
+    static func complete(raw messages: [[String: Any]], config: AssistantConfig, timeout: TimeInterval = 15) async throws -> String {
+        let all = config.model.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !all.isEmpty else { throw AssistantError.notConfigured }
+        let now = Date()
+        // Reihenfolge: zuletzt erfolgreiches zuerst, überlastete ans Ende
+        let fresh = all.filter { (cooldown[$0] ?? .distantPast) < now }
+        let cooling = all.filter { (cooldown[$0] ?? .distantPast) >= now }
+        var order = fresh
+        if let good = lastGood, let i = order.firstIndex(of: good) { order.insert(order.remove(at: i), at: 0) }
+        order += cooling
+
         var lastError: Error = AssistantError.notConfigured
-        for model in models {
-            for attempt in 0..<2 {
-                do {
-                    return try await completeOnce(messages, config: config, model: model)
-                } catch AssistantError.http(let code, let body) where [429, 500, 502, 503, 504].contains(code) {
-                    lastError = AssistantError.http(code, body)
-                    if attempt == 0 { try? await Task.sleep(for: .seconds(2)) }
+        for model in order {
+            do {
+                let text = try await completeOnce(messages, config: config, model: model, timeout: timeout)
+                lastGood = model
+                cooldown[model] = nil
+                return text
+            } catch let e as AssistantError {
+                lastError = e
+                if case .http(let code, _) = e, [404, 400].contains(code) == false {
+                    cooldown[model] = Date().addingTimeInterval(180)
                 }
+                continue
+            } catch let e as URLError where e.code == .timedOut {
+                lastError = AssistantError.http(504, "Zeitüberschreitung bei \(model)")
+                cooldown[model] = Date().addingTimeInterval(120)
+                continue
             }
         }
         throw lastError
     }
 
-    private static func completeOnce(_ messages: [[String: Any]], config: AssistantConfig, model: String) async throws -> String {
+    @MainActor
+    private static func completeOnce(_ messages: [[String: Any]], config: AssistantConfig, model: String,
+                                     timeout: TimeInterval) async throws -> String {
         guard config.isConfigured, let url = config.endpoint else { throw AssistantError.notConfigured }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.timeoutInterval = 90
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let key = config.apiKey.trimmingCharacters(in: .whitespaces)
-        if !key.isEmpty { req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
-        let body: [String: Any] = [
-            "model": model,
-            "temperature": 0.1,
-            "messages": messages
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        let isGemini = url.host?.contains("googleapis") == true
+        var body: [String: Any] = ["model": model, "temperature": 0.1, "messages": messages]
+        // Bei Gemini das „Nachdenken“ kurz halten – deutlich schnellere Antworten.
+        if isGemini && !noReasoningParam.contains(model) { body["reasoning_effort"] = "low" }
+
+        func send(_ body: [String: Any]) async throws -> (Data, Int) {
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = timeout
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let key = config.apiKey.trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty { req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            return (data, (resp as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+
+        var (data, code) = try await send(body)
+        if code == 400, body["reasoning_effort"] != nil {
+            // Modell kennt den Parameter nicht → ohne erneut
+            noReasoningParam.insert(model)
+            body["reasoning_effort"] = nil
+            (data, code) = try await send(body)
+        }
         guard (200..<300).contains(code) else { throw AssistantError.http(code, String(data: data, encoding: .utf8) ?? "") }
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = obj["choices"] as? [[String: Any]],

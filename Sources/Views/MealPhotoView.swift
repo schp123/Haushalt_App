@@ -42,7 +42,7 @@ enum MealVision {
                 ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(jpeg.base64EncodedString())"]]
             ]
         ]
-        let raw = try await AssistantClient.complete(raw: [message], config: AssistantConfig.load())
+        let raw = try await AssistantClient.complete(raw: [message], config: AssistantConfig.load(), timeout: 30)
         guard let json = Assistant.extractJSON(raw),
               let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
             throw AssistantError.badResponse(raw)

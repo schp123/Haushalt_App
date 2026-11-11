@@ -23,8 +23,9 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
         let u = AVSpeechUtterance(string: clean)
-        u.voice = Self.bestGermanVoice
-        u.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
+        u.voice = Self.selectedVoice
+        let rate = UserDefaults.standard.object(forKey: "assistant.rate") as? Double ?? 1.05
+        u.rate = min(AVSpeechUtteranceMaximumSpeechRate, Float(rate) * AVSpeechUtteranceDefaultSpeechRate)
         onDone = done
         synth.speak(u)
     }
@@ -34,9 +35,38 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
     }
 
-    private static var bestGermanVoice: AVSpeechSynthesisVoice? {
-        let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "de-DE" }
-        return voices.max { $0.quality.rawValue < $1.quality.rawValue } ?? AVSpeechSynthesisVoice(language: "de-DE")
+    /// Alle deutschen Stimmen, beste Qualität zuerst.
+    static var germanVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("de") }
+            .sorted {
+                if $0.quality.rawValue != $1.quality.rawValue { return $0.quality.rawValue > $1.quality.rawValue }
+                return $0.name < $1.name
+            }
+    }
+
+    static var selectedVoice: AVSpeechSynthesisVoice? {
+        if let id = UserDefaults.standard.string(forKey: "assistant.voice"), let v = AVSpeechSynthesisVoice(identifier: id) {
+            return v
+        }
+        return germanVoices.first ?? AVSpeechSynthesisVoice(language: "de-DE")
+    }
+
+    static func qualityLabel(_ v: AVSpeechSynthesisVoice) -> String {
+        switch v.quality {
+        case .premium: return "Premium"
+        case .enhanced: return "Erweitert"
+        default: return "Standard"
+        }
+    }
+
+    static func regionLabel(_ v: AVSpeechSynthesisVoice) -> String {
+        switch v.language {
+        case "de-DE": return "Deutschland"
+        case "de-AT": return "Österreich"
+        case "de-CH": return "Schweiz"
+        default: return v.language
+        }
     }
 
     private func finished() {

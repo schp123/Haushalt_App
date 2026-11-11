@@ -433,6 +433,11 @@ struct AssistantSettingsView: View {
 
             Section {
                 Toggle("Antworten vorlesen", isOn: $speakBack)
+                NavigationLink {
+                    VoicePickerView()
+                } label: {
+                    LabeledContent("Stimme", value: Speaker.selectedVoice?.name ?? "Standard")
+                }
                 Toggle("Vor dem Ausführen nachfragen", isOn: $confirmFirst)
             } header: {
                 Text("Sprache")
@@ -464,5 +469,68 @@ struct AssistantSettingsView: View {
         } catch {
             testResult = "✗ \(error.localizedDescription)"
         }
+    }
+}
+
+
+// MARK: - Stimme wählen
+
+struct VoicePickerView: View {
+    @AppStorage("assistant.voice") private var voiceID = ""
+    @AppStorage("assistant.rate") private var rate = 1.05
+
+    var body: some View {
+        let voices = Speaker.germanVoices
+        List {
+            Section {
+                ForEach(voices, id: \.identifier) { v in
+                    HStack(spacing: 12) {
+                        Button {
+                            voiceID = v.identifier
+                            Speaker.shared.speak("Hallo, ich bin \(v.name). So klinge ich als dein Kammer-Assistent.")
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(v.name).foregroundStyle(Theme.ink)
+                                    Text("\(Speaker.qualityLabel(v)) · \(Speaker.regionLabel(v))")
+                                        .font(.footnote).foregroundStyle(Theme.muted)
+                                }
+                                Spacer()
+                                if v.identifier == (Speaker.selectedVoice?.identifier ?? "") {
+                                    Image(systemName: "checkmark").foregroundStyle(Theme.accent).fontWeight(.bold)
+                                }
+                            }
+                        }
+                        Button {
+                            let saved = voiceID
+                            voiceID = v.identifier
+                            Speaker.shared.speak("Hallo, ich bin \(v.name).") { voiceID = saved }
+                        } label: {
+                            Image(systemName: "play.circle").font(.system(size: 22))
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Probehören")
+                    }
+                    .frame(minHeight: 44)
+                }
+            } header: {
+                Text("Antippen zum Auswählen")
+            } footer: {
+                Text("Natürlicher klingen die Stimmen „Premium“ und „Erweitert“. Mehr davon kannst du kostenlos laden: iPhone-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen → Deutsch (z. B. Anna oder Helena, jeweils Premium). Danach erscheinen sie hier. Die Siri-Stimmen selbst gibt Apple für andere Apps nicht frei.")
+            }
+
+            Section("Sprechtempo") {
+                Slider(value: $rate, in: 0.8...1.4, step: 0.05) {
+                    Text("Tempo")
+                } minimumValueLabel: {
+                    Image(systemName: "tortoise")
+                } maximumValueLabel: {
+                    Image(systemName: "hare")
+                }
+                Button("Probehören") { Speaker.shared.speak("Ich setze Milch auf leer und packe zwei Zitronen auf die Liste.") }
+            }
+        }
+        .navigationTitle("Stimme")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

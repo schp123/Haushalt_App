@@ -1,0 +1,42 @@
+name: IPA bauen
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: XcodeGen installieren
+        run: brew install xcodegen
+
+      - name: Xcode-Projekt erzeugen
+        run: xcodegen generate
+
+      - name: App bauen (unsigniert)
+        run: |
+          xcodebuild \
+            -project Wocheneinkauf.xcodeproj \
+            -target Wocheneinkauf \
+            -configuration Release \
+            -sdk iphoneos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: IPA packen
+        run: |
+          mkdir -p Payload
+          cp -R build/Release-iphoneos/Wocheneinkauf.app Payload/
+          zip -qry Wocheneinkauf.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Wocheneinkauf-ipa
+          path: Wocheneinkauf.ipa

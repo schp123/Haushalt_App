@@ -348,6 +348,41 @@ final class WishItem {
     }
 }
 
+// MARK: - Einkaufsliste (freie Einträge)
+
+@Model
+final class ListItem {
+    var uuid: UUID = UUID()
+    var name: String = ""
+    var quantity: String = ""
+    var sourceRaw: String = Source.rewe.rawValue
+    var storeName: String = ""
+    var done: Bool = false
+    var createdAt: Date = Date()
+    init(name: String, quantity: String = "", source: Source = .rewe, storeName: String = "") {
+        self.name = name
+        self.quantity = quantity
+        self.sourceRaw = source.rawValue
+        self.storeName = storeName
+        self.createdAt = Date()
+    }
+    var source: Source {
+        get { Source(rawValue: sourceRaw) ?? .rewe }
+        set { sourceRaw = newValue.rawValue }
+    }
+    var whereToBuy: String { source == .sonstiges && !storeName.isEmpty ? storeName : source.label }
+
+    /// „2 Zitronen“ → Menge „2“, Name „Zitronen“.
+    static func split(_ text: String) -> (quantity: String, name: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = "^(\\d+(?:[.,]\\d+)?\\s*(?:x|kg|g|l|ml|stk\\.?|stück|packungen?|pck\\.?|dosen?|flaschen?|becher|bund|beutel|gläser|glas)?)\\s+(.+)$"
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let m = re.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+              let q = Range(m.range(at: 1), in: t), let n = Range(m.range(at: 2), in: t) else { return ("", t) }
+        return (String(t[q]).trimmingCharacters(in: .whitespaces), String(t[n]))
+    }
+}
+
 // MARK: - Einstellungen
 
 @Model

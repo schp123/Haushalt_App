@@ -27,6 +27,10 @@ targets:
         NSCameraUsageDescription: Zum Scannen von Barcodes, Kassenbons und Haushalts-Codes.
         NSPhotoLibraryUsageDescription: Für Produktfotos.
         ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: Für die Verbindung zu deinem OmniRoute-Server im Heimnetz.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.egler.wocheneinkauf

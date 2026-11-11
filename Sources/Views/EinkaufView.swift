@@ -44,6 +44,8 @@ struct EinkaufView: View {
                     }
                     .padding(.top, 12)
 
+                    ShoppingListSection()
+
                     listSection(.rewe, f.shoppingList(for: .rewe),
                                 subtitle: "Bestellen \(Fmt.weekdayName(settings.orderWeekday)) · Lieferung \(Fmt.shortDate(f.nextDelivery)), \(settings.deliveryWindow)",
                                 info: "Der Warenkorb wird \(Fmt.weekdayName(settings.cartFillWeekday)) um \(Fmt.time(settings.cartFillHour, settings.cartFillMinute)) automatisch auf rewe.de befüllt – du tippst nur noch auf „Bestellen“.")
@@ -237,7 +239,7 @@ struct PurchaseEditView: View {
                     HStack {
                         Text("Betrag")
                         Spacer()
-                        TextField("0,00", value: $total, format: .number.precision(.fractionLength(2)).locale(Fmt.de))
+                        NumberField(placeholder: "0,00", value: $total)
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                             .font(.system(size: 22, weight: .bold))
@@ -306,6 +308,10 @@ struct PurchaseEditView: View {
     private func save() {
         let src = items.isEmpty ? pickedSource : source
         context.insert(Purchase(date: date, source: src, total: total, itemCount: items.count, note: note))
+        if !items.isEmpty {
+            let listItems = (try? context.fetch(FetchDescriptor<ListItem>())) ?? []
+            for li in listItems where !li.done && li.source == source { li.done = true }
+        }
         for item in items {
             item.product.setStock(item.product.currentStock() + item.status.orderAmount)
             item.product.lowNotifiedAt = nil

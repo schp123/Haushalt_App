@@ -63,7 +63,7 @@ private struct SettingsForm: View {
                 HStack {
                     Text("Monatsbudget")
                     Spacer()
-                    TextField("800", value: $s.budget, format: .number.locale(Fmt.de))
+                    NumberField(placeholder: "800", value: $s.budget)
                         .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 100)
                     Text("€").foregroundStyle(Theme.muted)
                 }
@@ -103,6 +103,18 @@ private struct SettingsForm: View {
             }
 
             Section {
+                NavigationLink {
+                    AssistantSettingsView()
+                } label: {
+                    LabeledContent("Sprach-Assistent", value: AssistantConfig.load().isConfigured ? "eingerichtet" : "aus")
+                }
+            } header: {
+                Text("Assistent")
+            } footer: {
+                Text("Steuerung per Sprache über OmniRoute – Bestand, Einkaufsliste, Wunschliste, Mahlzeiten und mehr.")
+            }
+
+            Section {
                 LabeledContent("Version", value: AppInfo.version)
             }
         }
@@ -119,7 +131,7 @@ private struct SettingsForm: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: value, format: .number.locale(Fmt.de))
+            NumberField(placeholder: "0", value: value)
                 .keyboardType(.numberPad).multilineTextAlignment(.trailing).frame(maxWidth: 90)
             Text(suffix).foregroundStyle(Theme.muted).frame(minWidth: 34, alignment: .leading)
         }

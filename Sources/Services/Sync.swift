@@ -86,7 +86,7 @@ struct SyncConfig: Codable, Equatable {
 // MARK: - Datenformat in der Datenbank
 
 enum RecordKind: String, CaseIterable {
-    case settings, product, template, plan, meallog, purchase, wish, shoppinglist
+    case settings, product, template, plan, meallog, purchase, wish, listitem, shoppinglist
     /// Reihenfolge beim Einspielen (Produkte vor Vorlagen vor Wochenplan).
     var order: Int { RecordKind.allCases.firstIndex(of: self) ?? 99 }
 }
@@ -128,6 +128,11 @@ struct WishDTO: Codable {
     var doneAt: Date?
     var createdAt: Date
 }
+struct ListItemDTO: Codable {
+    var name, quantity, source, storeName: String
+    var done: Bool
+    var createdAt: Date
+}
 struct SettingsDTO: Codable {
     var orderWeekday, deliveryWeekday: Int
     var deliveryWindow: String
@@ -158,6 +163,8 @@ struct ShoppingListDTO: Codable {
     var rewe: [ShoppingItemDTO]
     var metzger: [ShoppingItemDTO]
     var andere: [ShoppingItemDTO]
+    /// Freie Einträge der Einkaufsliste (noch nicht abgehakt).
+    var extra: [ListItemDTO]
 }
 
 private struct LocalRecord {
@@ -319,6 +326,8 @@ final class SyncEngine {
 
     @ObservationIgnored private var context: ModelContext?
     @ObservationIgnored private var pending: Task<Void, Never>?
+    /// Während eines laufenden Abgleichs gab es neue Änderungen → danach gleich noch einmal.
+    @ObservationIgnored private var again = false
     private var cursor: String? {
         get { UserDefaults.standard.string(forKey: "sync.cursor") }
         set { UserDefaults.standard.set(newValue, forKey: "sync.cursor") }
@@ -381,7 +390,8 @@ final class SyncEngine {
     }
 
     func sync(manual: Bool = false) async {
-        guard let config, let ctx = context, !isSyncing else { return }
+        guard let config, let ctx = context else { return }
+        if isSyncing { again = true; return }
         if paused {
             guard manual else {
                 lastError = "Der letzte Abgleich wurde unterbrochen. Bitte „Jetzt abgleichen“ tippen."
@@ -400,16 +410,22 @@ final class SyncEngine {
             SyncTrace.step("IDs prüfen")
             ensureIDs(ctx)
             try? ctx.save()
-            SyncTrace.step("Herunterladen")
-            try await pull(client, ctx)
+            // Erst eigene Änderungen hochladen, dann die des anderen iPhones holen –
+            // so kann ein gerade eingetragener Bestand nicht von einem älteren Server-Stand überschrieben werden.
             SyncTrace.step("Hochladen")
             try await push(client, ctx)
+            SyncTrace.step("Herunterladen")
+            try await pull(client, ctx)
             SyncTrace.step("Speichern")
             try? ctx.save()
             SyncTrace.step("fertig")
             lastSync = Date()
             lastError = nil
             UserDefaults.standard.removeObject(forKey: "sync.crashStep")
+            if again {
+                again = false
+                scheduleSync()
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -467,6 +483,11 @@ final class SyncEngine {
                                        photo: w.photo?.base64EncodedString(), price: w.price, dueDate: w.dueDate,
                                        done: w.done, doneAt: w.doneAt, createdAt: w.createdAt))
         }
+        let listItems = ((try? ctx.fetch(FetchDescriptor<ListItem>())) ?? []).filter { !$0.isDeleted }
+        for li in listItems {
+            add(.listitem, li.uuid, ListItemDTO(name: li.name, quantity: li.quantity, source: li.sourceRaw,
+                                               storeName: li.storeName, done: li.done, createdAt: li.createdAt))
+        }
         let s = AppSettings.current(ctx)
         add(.settings, StableID.settings, dto(s))
 
@@ -487,7 +508,11 @@ final class SyncEngine {
         SyncTrace.step("Einkaufsliste: speichern")
         add(.shoppinglist, StableID.shoppingList,
             ShoppingListDTO(deliveryDate: f.nextDelivery, deliveryWindow: s.deliveryWindow,
-                            rewe: rewe, metzger: metzger, andere: andere))
+                            rewe: rewe, metzger: metzger, andere: andere,
+                            extra: listItems.filter { !$0.done }.map {
+                                ListItemDTO(name: $0.name, quantity: $0.quantity, source: $0.sourceRaw,
+                                            storeName: $0.storeName, done: false, createdAt: $0.createdAt)
+                            }))
         return out
     }
 
@@ -672,6 +697,17 @@ final class SyncEngine {
             w.name = d.name; w.note = d.note; w.storeName = d.storeName; w.linkURL = d.linkURL
             w.photo = d.photo.flatMap { Data(base64Encoded: $0) }; w.price = d.price; w.dueDate = d.dueDate
             w.done = d.done; w.doneAt = d.doneAt; w.createdAt = d.createdAt
+        case .listitem:
+            guard let d = try? dec.decode(ListItemDTO.self, from: data) else { return }
+            let all = (try? ctx.fetch(FetchDescriptor<ListItem>())) ?? []
+            let li = all.first { $0.uuid == id } ?? {
+                let n = ListItem(name: d.name)
+                n.uuid = id
+                ctx.insert(n)
+                return n
+            }()
+            li.name = d.name; li.quantity = d.quantity; li.sourceRaw = d.source; li.storeName = d.storeName
+            li.done = d.done; li.createdAt = d.createdAt
         case .settings:
             guard let d = try? dec.decode(SettingsDTO.self, from: data) else { return }
             let s = AppSettings.current(ctx)
@@ -701,6 +737,8 @@ final class SyncEngine {
             if let p = ((try? ctx.fetch(FetchDescriptor<Purchase>())) ?? []).first(where: { $0.uuid == id }) { ctx.delete(p) }
         case .wish:
             if let w = ((try? ctx.fetch(FetchDescriptor<WishItem>())) ?? []).first(where: { $0.uuid == id }) { ctx.delete(w) }
+        case .listitem:
+            if let li = ((try? ctx.fetch(FetchDescriptor<ListItem>())) ?? []).first(where: { $0.uuid == id }) { ctx.delete(li) }
         case .settings, .shoppinglist:
             break
         }
@@ -749,6 +787,7 @@ final class SyncEngine {
         case .meallog: return h(MealLogDTO.self)
         case .purchase: return h(PurchaseDTO.self)
         case .wish: return h(WishDTO.self)
+        case .listitem: return h(ListItemDTO.self)
         case .settings: return h(SettingsDTO.self)
         case .shoppinglist: return nil
         }

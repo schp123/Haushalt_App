@@ -125,3 +125,42 @@ struct PrimaryButtonStyle: ButtonStyle {
             .background(color.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
+
+/// Zahlenfeld, das jede Eingabe sofort übernimmt (auch wenn man direkt auf „Sichern“ tippt).
+struct NumberField: View {
+    var placeholder: String = "0"
+    @Binding var value: Double
+    var fractionDigits: Int = 2
+
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .keyboardType(.decimalPad)
+            .focused($focused)
+            .onAppear { text = Self.format(value, fractionDigits) }
+            .onChange(of: text) { _, t in
+                if let v = Self.parse(t) {
+                    if v != value { value = v }
+                } else if t.trimmingCharacters(in: .whitespaces).isEmpty {
+                    value = 0
+                }
+            }
+            .onChange(of: value) { _, v in
+                if !focused, Self.parse(text) != v { text = Self.format(v, fractionDigits) }
+            }
+    }
+
+    static func format(_ v: Double, _ digits: Int) -> String {
+        v == 0 ? "" : v.formatted(.number.precision(.fractionLength(0...digits)).grouping(.never).locale(Fmt.de))
+    }
+
+    static func parse(_ s: String) -> Double? {
+        var t = s.trimmingCharacters(in: .whitespaces)
+        if t.contains(",") {
+            t = t.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: ".")
+        }
+        return Double(t)
+    }
+}

@@ -116,7 +116,7 @@ struct WishEditView: View {
                     HStack {
                         Text("Preis")
                         Spacer()
-                        TextField("0", value: $price, format: .number.precision(.fractionLength(0...2)).locale(Fmt.de))
+                        NumberField(placeholder: "0", value: $price)
                             .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 100)
                         Text("€").foregroundStyle(Theme.muted)
                     }
@@ -209,7 +209,7 @@ struct WishDoneView: View {
                     HStack {
                         Text("Bezahlt")
                         Spacer()
-                        TextField("0", value: $price, format: .number.precision(.fractionLength(0...2)).locale(Fmt.de))
+                        NumberField(placeholder: "0", value: $price)
                             .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 110)
                             .font(.system(size: 20, weight: .bold))
                         Text("€").foregroundStyle(Theme.muted)

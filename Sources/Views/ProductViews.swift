@@ -233,6 +233,7 @@ struct ProductEditView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var usagePerWeek: Double = 0
     @State private var leadDays = 7
+    @State private var loaded = false
 
     var body: some View {
         NavigationStack {
@@ -358,7 +359,7 @@ struct ProductEditView: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: value, format: .number.locale(Fmt.de))
+            NumberField(placeholder: "0", value: value)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 110)
@@ -408,6 +409,9 @@ struct ProductEditView: View {
     }
 
     private func loadFromProduct() {
+        // Nur einmal laden – sonst überschreibt ein erneutes Erscheinen (z. B. nach dem Fotowähler) die Eingaben.
+        guard !loaded else { return }
+        loaded = true
         guard let p = product else {
             if household {
                 source = .sonstiges

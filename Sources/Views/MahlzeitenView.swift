@@ -223,7 +223,7 @@ struct ManualMealView: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: v, format: .number.locale(Fmt.de))
+            NumberField(placeholder: "0", value: v)
                 .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 100)
             Text(suffix).foregroundStyle(Theme.muted).frame(minWidth: 34, alignment: .leading)
         }
@@ -280,7 +280,7 @@ struct TemplateEditView: View {
                             }
                             .labelsHidden()
                             Spacer()
-                            TextField("0", value: $row.amount, format: .number.locale(Fmt.de))
+                            NumberField(placeholder: "0", value: $row.amount)
                                 .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 70)
                             Text(row.product?.unit.short ?? "").foregroundStyle(Theme.muted).frame(minWidth: 44, alignment: .leading)
                         }

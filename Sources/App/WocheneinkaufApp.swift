@@ -11,6 +11,8 @@ final class Router {
     static let shared = Router()
     var tab: AppTab = .vorrat
     var showCheck = false
+    var showAssistant = false
+    var openCheckAfterAssistant = false
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -53,7 +55,7 @@ struct WocheneinkaufApp: App {
         }
         .modelContainer(for: [
             Product.self, PriceRecord.self, MealTemplate.self, Ingredient.self,
-            PlanEntry.self, MealLog.self, Purchase.self, AppSettings.self, WishItem.self, SyncMeta.self
+            PlanEntry.self, MealLog.self, Purchase.self, AppSettings.self, WishItem.self, SyncMeta.self, ListItem.self
         ])
     }
 }
@@ -82,8 +84,25 @@ struct RootView: View {
                 .tag(AppTab.ausgaben)
         }
         .tint(Theme.accent)
+        .overlay(alignment: .bottomTrailing) {
+            // Assistent – auf jedem Screen erreichbar
+            Button { router.showAssistant = true } label: {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 58, height: 58)
+                    .background(Theme.ink, in: Circle())
+                    .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+            }
+            .accessibilityLabel("Assistent")
+            .padding(.trailing, 18)
+            .padding(.bottom, 64)
+        }
         .sheet(isPresented: $router.showCheck) {
             CheckView()
+        }
+        .sheet(isPresented: $router.showAssistant) {
+            AssistantView()
         }
         .task {
             SyncEngine.shared.attach(context)

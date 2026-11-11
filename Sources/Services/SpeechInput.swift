@@ -14,6 +14,8 @@ final class SpeechInput {
     @ObservationIgnored var onFinished: ((String) -> Void)?
     /// iOS hat die Erkennung von sich aus beendet (z. B. Zeitlimit) – Text bleibt stehen, wird aber nicht gesendet.
     @ObservationIgnored var onInterrupted: ((String) -> Void)?
+    /// Jeder Zwischenstand (z. B. um ein gesprochenes „Ja“ sofort zu erkennen).
+    @ObservationIgnored var onPartial: ((String) -> Void)?
     @ObservationIgnored private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "de-DE"))
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -26,6 +28,7 @@ final class SpeechInput {
 
     func start() async {
         guard !isListening else { return }
+        Speaker.shared.stop()
         error = nil
         guard await Self.authorize() else {
             error = "Bitte Mikrofon und Spracherkennung für Kammer erlauben (iPhone-Einstellungen → Kammer)."
@@ -56,7 +59,10 @@ final class SpeechInput {
 
             task = recognizer.recognitionTask(with: req, resultHandler: Self.resultHandler { [weak self] text, final, failed in
                 guard let self, self.isListening else { return }
-                if let text, !text.isEmpty { self.transcript = text }
+                if let text, !text.isEmpty {
+                    self.transcript = text
+                    self.onPartial?(text)
+                }
                 if final || failed { self.interrupted() }
             })
         } catch {

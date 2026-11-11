@@ -1,14 +1,21 @@
 import SwiftUI
 import SwiftData
 
-/// Sprach-Assistent: Text (diktiert mit Wispr Flow oder der iPhone-Diktierfunktion) → OmniRoute → Aktionen.
+/// Sprach-Assistent: zuhören → verstehen → vorlesen → nach Freigabe (Knopf oder „Ja“) ausführen.
 struct AssistantView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage("assistant.speak") private var speakBack = true
+    @AppStorage("assistant.confirm") private var confirmFirst = true
+
+    enum Phase { case thinking, awaiting, done, discarded }
+
     struct Turn: Identifiable {
         let id = UUID()
         var text: String
+        var state: Phase = .thinking
+        var plan: AssistantPlan?
         var reply: String = ""
         var done: [String] = []
         var failed: [String] = []
@@ -24,8 +31,11 @@ struct AssistantView: View {
     @State private var showSettings = false
     @FocusState private var focused: Bool
     @State private var speech = SpeechInput()
+    /// Hört gerade auf „Ja“/„Nein“ für die Freigabe.
+    @State private var confirming = false
 
     private var configured: Bool { AssistantConfig.load().isConfigured }
+    private var awaitingIndex: Int? { turns.lastIndex { $0.state == .awaiting } }
 
     var body: some View {
         NavigationStack {
@@ -40,19 +50,17 @@ struct AssistantView: View {
                             if busy {
                                 HStack(spacing: 8) { ProgressView(); Text("Denke nach …").foregroundStyle(Theme.muted) }
                                     .font(.system(size: 14))
-                                    .id("busy")
                             }
                             if let error {
                                 Text(error).font(.system(size: 14)).foregroundStyle(Theme.warnText).card(14, radius: 18)
                             }
+                            Color.clear.frame(height: 1).id("bottom")
                         }
                         .padding(20)
                     }
-                    .onChange(of: turns.count) { _, _ in
-                        if let id = turns.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } }
-                    }
+                    .onChange(of: turns.count) { _, _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+                    .onChange(of: busy) { _, _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
                 }
-
                 inputBar
             }
             .background(Theme.ground)
@@ -68,33 +76,26 @@ struct AssistantView: View {
             .sheet(isPresented: $showSettings) {
                 NavigationStack { AssistantSettingsView() }
             }
-            .onAppear {
-                speech.onFinished = { text in
-                    input = text
-                    send()
-                }
-                speech.onInterrupted = { text in
-                    input = text
-                    speech.error = "Aufnahme beendet – prüfen und mit dem Pfeil senden oder weitersprechen."
-                }
-                // Direkt zuhören, sobald der Assistent aufgeht
-                if configured { Task { await speech.start() } } else { showSettings = true }
+            .onAppear(perform: setUp)
+            .onDisappear {
+                speech.stop()
+                Speaker.shared.stop()
             }
-            .onDisappear { speech.stop() }
         }
     }
+
+    // MARK: Teile
 
     private var intro: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Sag einfach, was zu tun ist").font(.system(size: 20, weight: .heavy))
-            Text("Tippe auf das Mikrofon und sprich so lange du willst. Wenn du fertig bist, tippe auf den roten Knopf – dann wird gesendet. Tippen geht natürlich auch (auch mit Wispr Flow).")
+            Text("Sprich so lange du willst und tippe auf den roten Knopf, wenn du fertig bist. \(confirmFirst ? "Ich lese dir vor, was ich verstanden habe – mit „Ja“ oder per Knopf gibst du es frei." : "")")
                 .font(.system(size: 14)).foregroundStyle(Theme.muted)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(["„Milch ist leer, Eier haben wir noch vier“",
                          "„Setz zwei Zitronen und Backpapier auf die Liste“",
                          "„Neues Produkt Waschmittel vom Biomarkt, 60 Wäschen, wir brauchen 6 pro Woche“",
                          "„Rosmarinöl von Amazon auf die Wunschliste, bis Ende des Monats“",
-                         "„Mittags hatte ich die Hähnchen-Bowl“",
                          "„Was fehlt für Freitag?“"], id: \.self) { ex in
                     Button { input = String(ex.dropFirst().dropLast()); focused = true } label: {
                         Text(ex).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.ink)
@@ -120,10 +121,46 @@ struct AssistantView: View {
                     .padding(12)
                     .background(Theme.ink, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            if !t.reply.isEmpty || !t.done.isEmpty || !t.failed.isEmpty || !t.pendingDeletes.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+            if t.state != .thinking {
+                VStack(alignment: .leading, spacing: 8) {
                     if !t.reply.isEmpty {
-                        Text(t.reply).font(.system(size: 15, weight: .medium))
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(t.reply).font(.system(size: 15, weight: .medium))
+                            Spacer(minLength: 0)
+                            Button { Speaker.shared.speak(t.reply) } label: {
+                                Image(systemName: "speaker.wave.2").font(.system(size: 15, weight: .semibold))
+                                    .frame(width: 36, height: 36)
+                            }
+                            .accessibilityLabel("Vorlesen")
+                        }
+                    }
+
+                    if t.state == .awaiting, let plan = t.plan {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(plan.descriptions, id: \.self) { d in
+                                Label(d, systemImage: "circle.dotted")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Theme.ink)
+                            }
+                        }
+                        HStack(spacing: 8) {
+                            Button("Verwerfen") { discard() }
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(Theme.warnText)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.warnBorder, lineWidth: 2))
+                            Button("Ausführen") { approve() }
+                                .buttonStyle(PrimaryButtonStyle())
+                        }
+                        if confirming {
+                            Label("Sag „Ja“ oder „Nein“", systemImage: "waveform")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Theme.muted)
+                        }
+                    }
+                    if t.state == .discarded {
+                        Label("Verworfen", systemImage: "xmark.circle")
+                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.muted)
                     }
                     ForEach(t.done, id: \.self) { d in
                         Label(d, systemImage: "checkmark.circle.fill")
@@ -156,7 +193,7 @@ struct AssistantView: View {
 
     private var inputBar: some View {
         VStack(spacing: 8) {
-            if speech.isListening {
+            if speech.isListening && !confirming {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "waveform")
                         .font(.system(size: 18, weight: .bold))
@@ -177,38 +214,51 @@ struct AssistantView: View {
                 Text(e).font(.system(size: 13)).foregroundStyle(Theme.warnText)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-        HStack(alignment: .bottom, spacing: 8) {
-            Button {
-                focused = false
-                speech.toggle()
-            } label: {
-                Image(systemName: speech.isListening ? "paperplane.fill" : "mic.fill")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 52, height: 52)
-                    .background(speech.isListening ? Theme.warn : Theme.ink, in: Circle())
+            HStack(alignment: .bottom, spacing: 8) {
+                Button {
+                    focused = false
+                    if confirming {
+                        // Während der Freigabe etwas anderes gesagt → als neuen Auftrag senden
+                        confirming = false
+                        if speech.transcript.trimmingCharacters(in: .whitespaces).isEmpty {
+                            speech.stop()
+                            listen()
+                        } else {
+                            speech.finish()
+                        }
+                    } else if speech.isListening {
+                        speech.finish()
+                    } else {
+                        listen()
+                    }
+                } label: {
+                    Image(systemName: speech.isListening && !confirming ? "paperplane.fill" : "mic.fill")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 52, height: 52)
+                        .background(speech.isListening && !confirming ? Theme.warn : Theme.ink, in: Circle())
+                }
+                .disabled(!configured || busy)
+                .accessibilityLabel(speech.isListening ? "Fertig – senden" : "Sprechen")
+                TextField(configured ? "Sprechen oder tippen …" : "Erst KI-Verbindung einrichten", text: $input, axis: .vertical)
+                    .lineLimit(1...5)
+                    .focused($focused)
+                    .submitLabel(.send)
+                    .onSubmit(send)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.line))
+                Button(action: send) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 46, height: 46)
+                        .background(canSend ? Theme.accent : Theme.line, in: Circle())
+                }
+                .disabled(!canSend)
+                .accessibilityLabel("Senden")
             }
-            .disabled(!configured || busy)
-            .accessibilityLabel(speech.isListening ? "Fertig – senden" : "Sprechen")
-            TextField(configured ? "Sprechen oder tippen …" : "Erst KI-Verbindung einrichten", text: $input, axis: .vertical)
-                .lineLimit(1...5)
-                .focused($focused)
-                .submitLabel(.send)
-                .onSubmit(send)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.line))
-            Button(action: send) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 46, height: 46)
-                    .background(canSend ? Theme.accent : Theme.line, in: Circle())
-            }
-            .disabled(!canSend)
-            .accessibilityLabel("Senden")
-        }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -217,9 +267,39 @@ struct AssistantView: View {
 
     private var canSend: Bool { !busy && configured && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
+    // MARK: Ablauf
+
+    private func setUp() {
+        speech.onFinished = { text in
+            input = text
+            send()
+        }
+        speech.onInterrupted = { text in
+            if confirming { return }
+            input = text
+            speech.error = "Aufnahme beendet – prüfen und mit dem Pfeil senden oder weitersprechen."
+        }
+        speech.onPartial = { text in
+            guard confirming, let answer = VoiceConfirm.detect(text) else { return }
+            stopConfirmListening()
+            switch answer {
+            case .yes: approve()
+            case .no: discard()
+            }
+        }
+        if configured { listen() } else { showSettings = true }
+    }
+
+    private func listen() {
+        Speaker.shared.stop()
+        Task { await speech.start() }
+    }
+
     private func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy else { return }
+        // Neuer Auftrag statt Freigabe → offenen Vorschlag verwerfen
+        if let i = awaitingIndex { turns[i].state = .discarded }
         input = ""
         error = nil
         turns.append(Turn(text: text))
@@ -227,25 +307,77 @@ struct AssistantView: View {
         Task { @MainActor in
             defer { busy = false }
             do {
-                let (result, raw) = try await Assistant.run(text, history: history, context: context)
-                if let i = turns.indices.last {
-                    turns[i].reply = result.reply
-                    turns[i].done = result.done
-                    turns[i].failed = result.failed
-                    turns[i].pendingDeletes = result.pendingDeletes
-                    if result.reply.isEmpty && result.done.isEmpty && result.failed.isEmpty && result.pendingDeletes.isEmpty {
-                        turns[i].reply = "Erledigt."
-                    }
-                }
+                let plan = try await Assistant.plan(text, history: history, context: context)
                 history.append(ChatMessage(role: "user", content: text))
-                history.append(ChatMessage(role: "assistant", content: raw))
+                history.append(ChatMessage(role: "assistant", content: plan.raw))
+                guard let i = turns.indices.last else { return }
+                turns[i].plan = plan
+                turns[i].reply = plan.reply
+                if plan.actions.isEmpty {
+                    turns[i].state = .done
+                    if turns[i].reply.isEmpty { turns[i].reply = "Dazu habe ich nichts gefunden." }
+                    say(turns[i].reply)
+                } else if confirmFirst {
+                    turns[i].state = .awaiting
+                    let question = (plan.reply.isEmpty ? plan.descriptions.joined(separator: ", ") : plan.reply) + " Soll ich das machen?"
+                    say(question) { startConfirmListening() }
+                } else {
+                    run(i)
+                    say(turns[i].reply.isEmpty ? "Erledigt." : turns[i].reply)
+                }
             } catch {
+                if let i = turns.indices.last { turns[i].state = .done }
                 self.error = error.localizedDescription
+                say("Das hat leider nicht geklappt.")
             }
         }
     }
 
+    private func run(_ i: Int) {
+        guard let plan = turns[i].plan else { return }
+        let result = Assistant.execute(plan, context: context, confirmDeletes: confirmFirst)
+        turns[i].done = result.done
+        turns[i].failed = result.failed
+        turns[i].pendingDeletes = result.pendingDeletes
+        turns[i].state = .done
+    }
+
+    private func approve() {
+        guard let i = awaitingIndex else { return }
+        stopConfirmListening()
+        run(i)
+        say(turns[i].failed.isEmpty ? "Erledigt." : "Erledigt, aber nicht alles hat geklappt.")
+    }
+
+    private func discard() {
+        guard let i = awaitingIndex else { return }
+        stopConfirmListening()
+        turns[i].state = .discarded
+        say("Okay, verworfen.")
+    }
+
+    private func startConfirmListening() {
+        guard awaitingIndex != nil else { return }
+        confirming = true
+        Task { await speech.start() }
+    }
+
+    private func stopConfirmListening() {
+        confirming = false
+        if speech.isListening { speech.stop() }
+    }
+
+    private func say(_ text: String, then done: (() -> Void)? = nil) {
+        if speakBack {
+            Speaker.shared.speak(text, then: done)
+        } else {
+            done?()
+        }
+    }
+
     private func close() {
+        speech.stop()
+        Speaker.shared.stop()
         dismiss()
         if Router.shared.openCheckAfterAssistant {
             Router.shared.openCheckAfterAssistant = false
@@ -264,20 +396,22 @@ struct AssistantSettingsView: View {
     @State private var config = AssistantConfig.load()
     @State private var testing = false
     @State private var testResult: String?
+    @AppStorage("assistant.speak") private var speakBack = true
+    @AppStorage("assistant.confirm") private var confirmFirst = true
 
     var body: some View {
         Form {
             Section {
-                TextField("Adresse, z. B. http://192.168.1.20:20128/v1", text: $config.baseURL)
+                TextField("Adresse, z. B. https://generativelanguage.googleapis.com/v1beta/openai", text: $config.baseURL)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField("API-Key (falls gesetzt)", text: $config.apiKey)
+                SecureField("API-Key", text: $config.apiKey)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("Modell(e), z. B. gemini-3.8-flash, gemini-3.5-flash", text: $config.model)
+                TextField("Modell(e), z. B. gemini-3.8-flash, gemini-3.6-flash", text: $config.model)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
             } header: {
                 Text("KI-Verbindung")
             } footer: {
-                Text("Jede OpenAI-kompatible Schnittstelle geht – z. B. Gemini (https://generativelanguage.googleapis.com/v1beta/openai) oder OmniRoute. Mehrere Modelle mit Komma trennen: Ist eins überlastet, nimmt die App automatisch das nächste. Die Daten bleiben nur auf diesem iPhone.")
+                Text("Jede OpenAI-kompatible Schnittstelle geht – z. B. Gemini oder OmniRoute. Mehrere Modelle mit Komma trennen: Ist eins überlastet, nimmt die App automatisch das nächste. Die Daten bleiben nur auf diesem iPhone.")
             }
 
             Section {
@@ -298,11 +432,14 @@ struct AssistantSettingsView: View {
             }
 
             Section {
-                Text("Diktieren: In den Assistenten tippen, dann in der Tastatur auf Wispr Flow wechseln (Globus-Taste) und sprechen. Die normale iPhone-Diktierfunktion (Mikrofon unten rechts) geht genauso.")
-                    .font(.footnote).foregroundStyle(Theme.muted)
+                Toggle("Antworten vorlesen", isOn: $speakBack)
+                Toggle("Vor dem Ausführen nachfragen", isOn: $confirmFirst)
             } header: {
                 Text("Sprache")
+            } footer: {
+                Text("Mit Nachfragen liest der Assistent vor, was er verstanden hat. Freigeben mit „Ja“ (oder „passt“, „mach“) bzw. per Knopf, verwerfen mit „Nein“. Etwas anderes sagen = neuer Auftrag.")
             }
+            .tint(Theme.accent)
         }
         .navigationTitle("Assistent einrichten")
         .navigationBarTitleDisplayMode(.inline)

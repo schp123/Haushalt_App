@@ -55,6 +55,11 @@ struct ChatMessage: Codable {
 enum AssistantClient {
     /// Mehrere Modelle durch Komma getrennt: bei Überlastung wird das nächste versucht.
     static func complete(_ messages: [ChatMessage], config: AssistantConfig) async throws -> String {
+        try await complete(raw: messages.map { ["role": $0.role, "content": $0.content] }, config: config)
+    }
+
+    /// Nachrichten im OpenAI-Format, z. B. mit Bild: ["role": "user", "content": [[type: text …], [type: image_url …]]]
+    static func complete(raw messages: [[String: Any]], config: AssistantConfig) async throws -> String {
         let models = config.model.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         var lastError: Error = AssistantError.notConfigured
         for model in models {
@@ -70,18 +75,18 @@ enum AssistantClient {
         throw lastError
     }
 
-    private static func completeOnce(_ messages: [ChatMessage], config: AssistantConfig, model: String) async throws -> String {
+    private static func completeOnce(_ messages: [[String: Any]], config: AssistantConfig, model: String) async throws -> String {
         guard config.isConfigured, let url = config.endpoint else { throw AssistantError.notConfigured }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 60
+        req.timeoutInterval = 90
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let key = config.apiKey.trimmingCharacters(in: .whitespaces)
         if !key.isEmpty { req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         let body: [String: Any] = [
             "model": model,
             "temperature": 0.1,
-            "messages": messages.map { ["role": $0.role, "content": $0.content] }
+            "messages": messages
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -95,6 +100,15 @@ enum AssistantClient {
         }
         return content
     }
+}
+
+// MARK: - Verstandener Auftrag (vor der Freigabe)
+
+struct AssistantPlan {
+    var reply: String
+    var actions: [[String: Any]]
+    var descriptions: [String]
+    var raw: String
 }
 
 // MARK: - Ergebnis eines Auftrags
@@ -112,22 +126,67 @@ struct AssistantResult {
 @MainActor
 enum Assistant {
 
-    static func run(_ text: String, history: [ChatMessage], context: ModelContext) async throws -> (AssistantResult, String) {
+    /// Schritt 1: Auftrag verstehen – noch nichts ausführen.
+    static func plan(_ text: String, history: [ChatMessage], context: ModelContext) async throws -> AssistantPlan {
         let config = AssistantConfig.load()
         let system = systemPrompt(context: context)
         let messages = [ChatMessage(role: "system", content: system)] + history.suffix(6) + [ChatMessage(role: "user", content: text)]
         let raw = try await AssistantClient.complete(messages, config: config)
         guard let json = extractJSON(raw),
               let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
-            // Kein JSON: Antwort einfach anzeigen
-            return (AssistantResult(reply: raw.trimmingCharacters(in: .whitespacesAndNewlines)), raw)
+            return AssistantPlan(reply: raw.trimmingCharacters(in: .whitespacesAndNewlines), actions: [], descriptions: [], raw: raw)
         }
-        let reply = obj["reply"] as? String ?? ""
         let actions = obj["actions"] as? [[String: Any]] ?? []
-        var result = AssistantResult(reply: reply)
-        for a in actions { execute(a, context: context, result: &result) }
+        return AssistantPlan(reply: obj["reply"] as? String ?? "", actions: actions,
+                             descriptions: actions.map { describe($0, context: context) }, raw: raw)
+    }
+
+    /// Schritt 2: freigegebene Aktionen ausführen.
+    static func execute(_ plan: AssistantPlan, context: ModelContext, confirmDeletes: Bool) -> AssistantResult {
+        var result = AssistantResult(reply: plan.reply)
+        for a in plan.actions { execute(a, context: context, result: &result) }
+        if confirmDeletes, !result.pendingDeletes.isEmpty {
+            let names = result.pendingDeletes.map(\.name)
+            Self.confirmDeletes(result.pendingDeletes, context: context)
+            result.pendingDeletes = []
+            result.done.append("Gelöscht: \(names.joined(separator: ", "))")
+        }
         Notifier.evaluate(context)
-        return (result, raw)
+        return result
+    }
+
+    /// Kurze Beschreibung einer Aktion für die Freigabe.
+    static func describe(_ a: [String: Any], context ctx: ModelContext) -> String {
+        let type = a["type"] as? String ?? ""
+        let pName = findProduct(a["product"], ctx)?.name ?? (str(a["product"]) ?? "?")
+        switch type {
+        case "set_stock":
+            return "\(pName) auf \(Fmt.number(num(a["amount"]) ?? 0)) setzen"
+        case "change_stock":
+            let d = num(a["delta"]) ?? 0
+            return "\(pName) \(d >= 0 ? "+" : "−")\(Fmt.number(abs(d)))"
+        case "add_product": return "Neues Produkt: \(str(a["name"]) ?? "?")"
+        case "update_product": return "\(pName) ändern"
+        case "delete_product": return "\(pName) löschen"
+        case "add_list_item":
+            let q = str(a["quantity"]) ?? numString(a["quantity"]) ?? ""
+            return "Auf die Einkaufsliste: \(q.isEmpty ? "" : q + " ")\(str(a["name"]) ?? "?")"
+        case "check_list_item": return "\(findListItem(a["item"], ctx)?.name ?? "Eintrag") abhaken"
+        case "remove_list_item": return "\(findListItem(a["item"], ctx)?.name ?? "Eintrag") von der Liste nehmen"
+        case "clear_list": return (a["only_done"] as? Bool) == false ? "Einkaufsliste komplett leeren" : "Erledigte von der Liste entfernen"
+        case "add_wish": return "Auf die Wunschliste: \(str(a["name"]) ?? "?")"
+        case "complete_wish": return "\(findWish(a["wish"], ctx)?.name ?? "Wunsch") als gekauft markieren"
+        case "log_meal": return "Mahlzeit eintragen: \(findTemplate(a["template"], ctx)?.name ?? str(a["name"]) ?? "?")"
+        case "add_template": return "Vorlage anlegen: \(str(a["name"]) ?? "?")"
+        case "set_plan":
+            let day = int(a["weekday"]).map { Fmt.weekdayName($0) } ?? "?"
+            let slot = MealSlot(rawValue: str(a["slot"]) ?? "")?.label ?? "?"
+            return "Wochenplan \(day) \(slot): \(findTemplate(a["template"], ctx)?.name ?? "nichts")"
+        case "add_purchase": return "Ausgabe buchen: \(Fmt.euro(num(a["amount"]) ?? 0))"
+        case "update_settings": return "Einstellungen ändern"
+        case "navigate": return "Öffnen: \(str(a["tab"]) ?? "?")"
+        default: return type
+        }
     }
 
     static func confirmDeletes(_ products: [Product], context: ModelContext) {
@@ -164,6 +223,7 @@ enum Assistant {
 
         Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, ohne Markdown:
         {"reply": "kurze Antwort auf Deutsch (1–2 Sätze)", "actions": [ ... ]}
+        "reply" wird laut vorgelesen: natürlich gesprochen, ohne Listen, Emojis oder IDs. Bei Aktionen fasst "reply" in einem Satz zusammen, was du tun wirst (z. B. „Ich setze Milch auf leer und packe zwei Zitronen auf die Liste.“) – der Nutzer bestätigt danach.
         Wenn nichts zu tun ist (z. B. eine Frage), ist "actions" leer und "reply" beantwortet die Frage anhand der Daten unten.
 
         Produkte/Einträge referenzierst du mit ihrer ID (8 Zeichen) aus den Listen unten, sonst mit dem Namen.

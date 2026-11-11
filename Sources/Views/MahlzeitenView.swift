@@ -9,6 +9,7 @@ struct MahlzeitenView: View {
     @Query private var settingsList: [AppSettings]
 
     @State private var showManual = false
+    @State private var showPhoto = false
     @State private var editTemplate: MealTemplate?
     @State private var showNewTemplate = false
 
@@ -48,7 +49,8 @@ struct MahlzeitenView: View {
                     MacroCard(totals: totals, settings: settings)
 
                     HStack(spacing: 8) {
-                        actionButton("Neue Vorlage", "square.grid.2x2", dark: true) { showNewTemplate = true }
+                        actionButton("Foto", "camera", dark: true) { showPhoto = true }
+                        actionButton("Neue Vorlage", "square.grid.2x2", dark: false) { showNewTemplate = true }
                         actionButton("Frei eintragen", "square.and.pencil", dark: false) { showManual = true }
                     }
 
@@ -100,6 +102,7 @@ struct MahlzeitenView: View {
             .background(Theme.ground)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showManual) { ManualMealView() }
+            .sheet(isPresented: $showPhoto) { MealPhotoView() }
             .sheet(isPresented: $showNewTemplate) { TemplateEditView(template: nil) }
             .sheet(item: $editTemplate) { t in TemplateEditView(template: t) }
         }

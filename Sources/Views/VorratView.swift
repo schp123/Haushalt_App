@@ -12,6 +12,22 @@ struct VorratView: View {
     @State private var showAddHousehold = false
     @State private var showSettings = false
     @State private var selected: Product?
+    @State private var search = ""
+    @State private var showReorder = false
+    @AppStorage("vorrat.sort") private var sortRaw = SortMode.eigene.rawValue
+
+    enum SortMode: String, CaseIterable, Identifiable {
+        case eigene, name, bestand, laden
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .eigene: "Eigene Reihenfolge"
+            case .name: "Name (A–Z)"
+            case .bestand: "Was fehlt zuerst"
+            case .laden: "Nach Laden"
+            }
+        }
+    }
 
     private var settings: AppSettings { settingsList.first ?? AppSettings() }
     private var forecast: Forecast { Forecast(products: products, plan: plan, settings: settings, logs: logs) }
@@ -43,12 +59,13 @@ struct VorratView: View {
                     if products.isEmpty {
                         emptyState
                     } else {
-                        grid(products.filter(\.isFood), statuses: statuses) { showAdd = true }
+                        searchField
+                        grid(arranged(products.filter(\.isFood), statuses), statuses: statuses) { showAdd = true }
 
                         SectionTitle(title: "Haushalt",
                                      trailing: products.contains { !$0.isFood } ? nil : "z. B. Waschmittel")
                             .padding(.top, 4)
-                        grid(products.filter { !$0.isFood }, statuses: statuses) { showAddHousehold = true }
+                        grid(arranged(products.filter { !$0.isFood }, statuses), statuses: statuses) { showAddHousehold = true }
                     }
                 }
                 .padding(.horizontal, 20)
@@ -61,6 +78,7 @@ struct VorratView: View {
             .sheet(isPresented: $showAddHousehold) { ProductEditView(product: nil, household: true) }
             .sheet(isPresented: $showSettings) { EinstellungenView() }
             .sheet(item: $selected) { p in ProductDetailView(product: p) }
+            .sheet(isPresented: $showReorder) { ReorderView() }
         }
     }
 
@@ -80,6 +98,19 @@ struct VorratView: View {
                     .overlay(Circle().stroke(Theme.line))
             }
             .accessibilityLabel("Vorrats-Check starten")
+            Menu {
+                Picker("Sortieren", selection: $sortRaw) {
+                    ForEach(SortMode.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                Button { showReorder = true } label: { Label("Reihenfolge bearbeiten", systemImage: "arrow.up.arrow.down") }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(Theme.card, in: Circle())
+                    .overlay(Circle().stroke(Theme.line))
+            }
+            .accessibilityLabel("Sortieren")
             Button { showSettings = true } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 17, weight: .semibold))
@@ -132,6 +163,55 @@ struct VorratView: View {
                 .frame(minHeight: 44)
         }
         .card(20)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
+            TextField("Produkt suchen", text: $search)
+                .autocorrectionDisabled()
+            if !search.isEmpty {
+                Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted) }
+                    .accessibilityLabel("Suche löschen")
+            }
+        }
+        .font(.system(size: 15))
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    /// Suche + gewählte Sortierung anwenden.
+    private func arranged(_ items: [Product], _ statuses: [PersistentIdentifier: Forecast.Status]) -> [Product] {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased(with: Fmt.de)
+        let filtered = q.isEmpty ? items : items.filter {
+            $0.name.lowercased(with: Fmt.de).contains(q) || $0.storeName.lowercased(with: Fmt.de).contains(q)
+        }
+        func rank(_ p: Product) -> Int {
+            switch statuses[p.persistentModelID]?.level {
+            case .leer?: return 0
+            case .knapp?: return 1
+            default: return 2
+            }
+        }
+        switch SortMode(rawValue: sortRaw) ?? .eigene {
+        case .eigene:
+            return filtered.sorted { $0.sortIndex < $1.sortIndex }
+        case .name:
+            return filtered.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case .bestand:
+            return filtered.sorted {
+                let a = rank($0), b = rank($1)
+                if a != b { return a < b }
+                let fa = $0.currentStock() / max($0.refillTo, 1), fb = $1.currentStock() / max($1.refillTo, 1)
+                return fa < fb
+            }
+        case .laden:
+            return filtered.sorted {
+                if $0.whereToBuy != $1.whereToBuy { return $0.whereToBuy.localizedStandardCompare($1.whereToBuy) == .orderedAscending }
+                return $0.sortIndex < $1.sortIndex
+            }
+        }
     }
 
     private func grid(_ items: [Product], statuses: [PersistentIdentifier: Forecast.Status], add: @escaping () -> Void) -> some View {
@@ -262,5 +342,57 @@ struct MacroCard: View {
             .font(.system(size: 12, weight: .semibold))
             Bar(fraction: v / max(goal, 1), color: color)
         }
+    }
+}
+
+
+// MARK: - Eigene Reihenfolge per Ziehen
+
+struct ReorderView: View {
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Product.sortIndex) private var products: [Product]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Lebensmittel") {
+                    ForEach(products.filter(\.isFood)) { row($0) }
+                        .onMove { move(in: products.filter(\.isFood), from: $0, to: $1) }
+                }
+                Section("Haushalt") {
+                    ForEach(products.filter { !$0.isFood }) { row($0) }
+                        .onMove { move(in: products.filter { !$0.isFood }, from: $0, to: $1) }
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Reihenfolge")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fertig") {
+                        UserDefaults.standard.set(VorratView.SortMode.eigene.rawValue, forKey: "vorrat.sort")
+                        Notifier.evaluate(context)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func row(_ p: Product) -> some View {
+        HStack(spacing: 12) {
+            ProductImage(photo: p.photo, emoji: p.emoji, tint: p.tint, size: 32)
+            Text(p.name)
+        }
+    }
+
+    private func move(in group: [Product], from: IndexSet, to: Int) {
+        var items = group
+        items.move(fromOffsets: from, toOffset: to)
+        // Die Gruppe behält ihre bisherigen Plätze, nur die Reihenfolge darin ändert sich.
+        let slots = group.map(\.sortIndex).sorted()
+        for (i, p) in items.enumerated() { p.sortIndex = slots[i] }
+        try? context.save()
     }
 }

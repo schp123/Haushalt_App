@@ -23,6 +23,7 @@ struct AssistantView: View {
     @State private var error: String?
     @State private var showSettings = false
     @FocusState private var focused: Bool
+    @State private var speech = SpeechInput()
 
     private var configured: Bool { AssistantConfig.load().isConfigured }
 
@@ -68,15 +69,21 @@ struct AssistantView: View {
                 NavigationStack { AssistantSettingsView() }
             }
             .onAppear {
-                if configured { focused = true } else { showSettings = true }
+                speech.onFinished = { text in
+                    input = text
+                    send()
+                }
+                // Direkt zuhören, sobald der Assistent aufgeht
+                if configured { Task { await speech.start() } } else { showSettings = true }
             }
+            .onDisappear { speech.stop() }
         }
     }
 
     private var intro: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Sag einfach, was zu tun ist").font(.system(size: 20, weight: .heavy))
-            Text("Tippe ins Feld unten und nutze das Mikrofon deiner Tastatur – z. B. Wispr Flow.")
+            Text("Tippe auf das Mikrofon und sprich – nach einer kurzen Pause wird automatisch gesendet. Tippen geht natürlich auch (auch mit Wispr Flow).")
                 .font(.system(size: 14)).foregroundStyle(Theme.muted)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(["„Milch ist leer, Eier haben wir noch vier“",
@@ -144,7 +151,41 @@ struct AssistantView: View {
     }
 
     private var inputBar: some View {
+        VStack(spacing: 8) {
+            if speech.isListening {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Theme.warn)
+                        .symbolEffect(.variableColor.iterative, isActive: true)
+                    Text(speech.transcript.isEmpty ? "Ich höre zu …" : speech.transcript)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(speech.transcript.isEmpty ? Theme.muted : Theme.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Abbrechen") { speech.stop() }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.muted)
+                }
+                .padding(14)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            if let e = speech.error {
+                Text(e).font(.system(size: 13)).foregroundStyle(Theme.warnText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         HStack(alignment: .bottom, spacing: 8) {
+            Button {
+                focused = false
+                speech.toggle()
+            } label: {
+                Image(systemName: speech.isListening ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 52, height: 52)
+                    .background(speech.isListening ? Theme.warn : Theme.ink, in: Circle())
+            }
+            .disabled(!configured || busy)
+            .accessibilityLabel(speech.isListening ? "Zuhören beenden" : "Sprechen")
             TextField(configured ? "Sprechen oder tippen …" : "Erst KI-Verbindung einrichten", text: $input, axis: .vertical)
                 .lineLimit(1...5)
                 .focused($focused)
@@ -163,6 +204,7 @@ struct AssistantView: View {
             }
             .disabled(!canSend)
             .accessibilityLabel("Senden")
+        }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -196,7 +238,6 @@ struct AssistantView: View {
             } catch {
                 self.error = error.localizedDescription
             }
-            focused = true
         }
     }
 

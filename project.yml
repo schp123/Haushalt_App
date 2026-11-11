@@ -26,6 +26,8 @@ targets:
           - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: Zum Scannen von Barcodes, Kassenbons und Haushalts-Codes.
         NSPhotoLibraryUsageDescription: Für Produktfotos.
+        NSMicrophoneUsageDescription: Damit du Kammer per Sprache bedienen kannst.
+        NSSpeechRecognitionUsageDescription: Wandelt deine Sprachbefehle in Text um – wenn möglich direkt auf dem iPhone.
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: Für die Verbindung zu deinem OmniRoute-Server im Heimnetz.
         NSAppTransportSecurity:

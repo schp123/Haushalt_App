@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import UIKit
 import Vision
+import LinkPresentation
 
 // MARK: - Mahlzeit eintragen (bucht Zutaten vom Vorrat ab)
 
@@ -14,7 +15,7 @@ enum MealLogger {
             guard let p = ing.product else { continue }
             n = n + p.nutrition(for: ing.amount)
             cost += p.cost(for: ing.amount)
-            p.stock = max(0, p.stock - ing.amount)
+            p.setStock(p.currentStock() - ing.amount)
         }
         context.insert(MealLog(date: date, slot: slot, name: template.name, emoji: template.emoji,
                                nutrition: n, cost: cost, fromPlan: fromPlan))
@@ -64,6 +65,7 @@ enum OpenFoodFacts {
 enum ProductInput {
     case barcode(String)
     case rewe(number: String, nameHint: String?, url: String?)
+    case link(URL)
     case name(String)
 
     static func parse(_ raw: String) -> ProductInput? {
@@ -83,11 +85,64 @@ enum ProductInput {
             }
         }
 
+        // Anderer Link (Amazon, Biomarkt, …)
+        if let r = t.range(of: "https?://\\S+", options: .regularExpression), let url = URL(string: String(t[r])) {
+            return .link(url)
+        }
+
         // Nur Ziffern: 12–14 Stellen = Barcode (EAN), sonst REWE-Artikelnummer
         if t.allSatisfy(\.isNumber) {
             return (12...14).contains(t.count) ? .barcode(t) : .rewe(number: t, nameHint: nil, url: nil)
         }
         return .name(t)
+    }
+}
+
+// MARK: - Link-Vorschau (Titel + Bild) für Produkte aus anderen Läden
+
+struct LinkPreview {
+    var title: String?
+    var image: UIImage?
+    var store: String?
+
+    static func storeName(for url: URL) -> String? {
+        guard let host = url.host?.lowercased() else { return nil }
+        let known: [(String, String)] = [("amazon", "Amazon"), ("amzn", "Amazon"), ("dm.de", "dm"), ("rossmann", "Rossmann"),
+                                         ("alnatura", "Alnatura"), ("denns", "denn's Biomarkt"), ("ebay", "eBay"),
+                                         ("ikea", "IKEA"), ("otto", "Otto")]
+        if let hit = known.first(where: { host.contains($0.0) }) { return hit.1 }
+        let parts = host.replacingOccurrences(of: "www.", with: "").split(separator: ".")
+        return parts.first.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+    }
+
+    @MainActor
+    static func load(_ url: URL) async -> LinkPreview {
+        var result = LinkPreview(store: storeName(for: url))
+        let provider = LPMetadataProvider()
+        provider.timeout = 12
+        guard let meta = try? await provider.startFetchingMetadata(for: url) else { return result }
+        result.title = meta.title
+        if let ip = meta.imageProvider {
+            result.image = await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+                ip.loadObject(ofClass: UIImage.self) { obj, _ in cont.resume(returning: obj as? UIImage) }
+            }
+        }
+        return result
+    }
+}
+
+enum ImageTools {
+    /// Verkleinert ein Foto (max. 600 px) und speichert es als JPEG – klein genug für den Sync.
+    static func jpeg(_ image: UIImage, maxSide: CGFloat = 600) -> Data? {
+        let size = image.size
+        let scale = min(1, maxSide / max(size.width, size.height, 1))
+        let target = CGSize(width: size.width * scale, height: size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let resized = UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
+        return resized.jpegData(compressionQuality: 0.7)
     }
 }
 

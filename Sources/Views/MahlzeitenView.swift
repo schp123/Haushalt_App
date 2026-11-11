@@ -276,7 +276,7 @@ struct TemplateEditView: View {
                         HStack {
                             Picker("Produkt", selection: $row.product) {
                                 Text("Wählen").tag(Product?.none)
-                                ForEach(products) { p in Text("\(p.emoji) \(p.name)").tag(Optional(p)) }
+                                ForEach(products.filter(\.isFood)) { p in Text("\(p.emoji) \(p.name)").tag(Optional(p)) }
                             }
                             .labelsHidden()
                             Spacer()

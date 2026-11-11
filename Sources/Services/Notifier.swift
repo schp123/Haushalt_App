@@ -19,6 +19,7 @@ enum Notifier {
         let startOfDay = Calendar.current.startOfDay(for: Date())
         let logs = (try? context.fetch(FetchDescriptor<MealLog>(predicate: #Predicate { $0.date >= startOfDay }))) ?? []
         let purchases = (try? context.fetch(FetchDescriptor<Purchase>())) ?? []
+        let wishes = (try? context.fetch(FetchDescriptor<WishItem>())) ?? []
         let forecast = Forecast(products: products, plan: plan, settings: settings, logs: logs)
 
         scheduleDailyCheck(settings)
@@ -26,7 +27,9 @@ enum Notifier {
         scheduleBestBefore(products)
         scheduleMetzger(forecast: forecast, settings: settings)
         checkBudget(purchases: purchases, settings: settings)
+        scheduleWishes(wishes)
         try? context.save()
+        SyncEngine.shared.scheduleSync()
     }
 
     // MARK: Täglicher Check
@@ -59,7 +62,13 @@ enum Notifier {
             p.lowNotifiedAt = Date()
             let day = Fmt.weekdayShort(Calendar.current.isoWeekday(st.restockDate))
             let body: String
-            if st.level == .leer {
+            if p.source == .sonstiges {
+                let days = p.usagePerWeek > 0
+                    ? Int((p.currentStock() / p.usagePerWeek * 7).rounded(.down))
+                    : nil
+                let reach = days.map { "reicht noch ca. \($0) Tage" } ?? "wird knapp"
+                body = "\(p.name) \(reach) – bei \(p.whereToBuy) nachkaufen."
+            } else if st.level == .leer {
                 body = "\(p.name) ist leer – steht auf der \(p.source.listName)."
             } else {
                 body = "\(p.name) reicht nicht bis \(day) – steht auf der \(p.source.listName)."
@@ -74,7 +83,7 @@ enum Notifier {
         center.removePendingNotificationRequests(withIdentifiers: products.map { "mhd-\($0.uuid.uuidString)" })
         let cal = Calendar.current
         for p in products {
-            guard let bb = p.bestBefore, p.stock > 0,
+            guard let bb = p.bestBefore, p.currentStock() > 0,
                   let dayBefore = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: bb)),
                   let fireDate = cal.date(bySettingHour: 9, minute: 0, second: 0, of: dayBefore),
                   fireDate > Date() else { continue }
@@ -118,6 +127,26 @@ enum Notifier {
         notifyNow(id: "budget-\(key)", title: "💶 Budget wird eng",
                   body: "Prognose für diesen Monat: \(Fmt.euro(stats.forecast)) von \(Fmt.euro(settings.budget)).",
                   route: "ausgaben")
+    }
+
+    // MARK: Wunschliste
+
+    private static func scheduleWishes(_ wishes: [WishItem]) {
+        center.removePendingNotificationRequests(withIdentifiers: wishes.map { "wish-\($0.uuid.uuidString)" })
+        let cal = Calendar.current
+        for w in wishes where !w.done {
+            guard let due = w.dueDate,
+                  let fire = cal.date(bySettingHour: 9, minute: 0, second: 0, of: due),
+                  fire > Date() else { continue }
+            let content = UNMutableNotificationContent()
+            content.title = "🎁 \(w.name) besorgen"
+            content.body = w.storeName.isEmpty ? "Steht heute auf der Wunschliste." : "Bei \(w.storeName) – steht heute auf der Wunschliste."
+            content.sound = .default
+            content.userInfo = ["route": "einkauf"]
+            let comps = cal.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
+            center.add(UNNotificationRequest(identifier: "wish-\(w.uuid.uuidString)", content: content,
+                                             trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)))
+        }
     }
 
     // MARK: Helfer

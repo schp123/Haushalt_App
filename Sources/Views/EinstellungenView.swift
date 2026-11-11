@@ -83,11 +83,15 @@ private struct SettingsForm: View {
             }
 
             Section {
-                LabeledContent("Personen", value: "2")
+                NavigationLink {
+                    SyncSettingsView()
+                } label: {
+                    LabeledContent("Gemeinsam nutzen", value: SyncEngine.shared.isConfigured ? "verbunden" : "aus")
+                }
             } header: {
                 Text("Haushalt")
             } footer: {
-                Text("Die gemeinsame Synchronisation kommt mit dem Backend in der nächsten Ausbaustufe.")
+                Text("Beide iPhones teilen Vorrat, Listen, Wunschliste, Wochenplan und Ausgaben.")
             }
         }
         .environment(\.locale, Fmt.de)

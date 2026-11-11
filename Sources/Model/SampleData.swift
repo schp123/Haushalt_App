@@ -9,7 +9,7 @@ enum SampleData {
                   stock: Double, warn: Double, refill: Double, pack: Double, gPerUnit: Double = 100,
                   kcal: Double, p: Double, c: Double, f: Double, index: Int) -> Product {
             let prod = Product(name: name, emoji: emoji, source: source, unit: unit)
-            prod.stock = stock
+            prod.setStock(stock)
             prod.warnAt = warn
             prod.refillTo = refill
             prod.packageSize = pack

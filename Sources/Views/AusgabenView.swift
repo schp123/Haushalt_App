@@ -84,7 +84,6 @@ struct AusgabenView: View {
     private func budgetCard(_ s: BudgetStats) -> some View {
         let rewe = s.bySource[.rewe] ?? 0
         let metzger = s.bySource[.metzger] ?? 0
-        let other = s.bySource[.sonstiges] ?? 0
         let base = max(s.budget, s.spent, 1)
         return VStack(alignment: .leading, spacing: 12) {
             Text(Fmt.monthYear(s.monthStart)).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.mutedOnDark)
@@ -96,7 +95,6 @@ struct AusgabenView: View {
                 HStack(spacing: 2) {
                     Rectangle().fill(Theme.accent).frame(width: geo.size.width * rewe / base)
                     Rectangle().fill(Theme.metzger).frame(width: geo.size.width * metzger / base)
-                    Rectangle().fill(Theme.sonstiges).frame(width: geo.size.width * other / base)
                     Spacer(minLength: 0)
                 }
                 .background(Color(hex: "3A3C37"))
@@ -104,12 +102,11 @@ struct AusgabenView: View {
             }
             .frame(height: 8)
             .accessibilityElement()
-            .accessibilityLabel("REWE \(Fmt.euro(rewe)), Metzger \(Fmt.euro(metzger)), Sonstiges \(Fmt.euro(other))")
+            .accessibilityLabel("REWE \(Fmt.euro(rewe)), Metzger \(Fmt.euro(metzger))")
 
             HStack(spacing: 14) {
                 legend(Theme.accent, "REWE \(Fmt.euro(rewe))")
                 legend(Theme.metzger, "Metzger \(Fmt.euro(metzger))")
-                if other > 0 { legend(Theme.sonstiges, "Sonst. \(Fmt.euro(other))") }
             }
             HStack {
                 if s.isCurrentMonth {
@@ -121,6 +118,14 @@ struct AusgabenView: View {
                     .foregroundStyle(Theme.mutedOnDark)
             }
             .font(.system(size: 12, weight: .medium))
+            if s.household > 0 {
+                Divider().overlay(Color(hex: "3A3C37"))
+                HStack {
+                    legend(Theme.sonstiges, "Haushalt & Wünsche")
+                    Spacer()
+                    Text("\(Fmt.euro(s.household)) · extra").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.mutedOnDark)
+                }
+            }
         }
         .foregroundStyle(.white)
         .padding(18)

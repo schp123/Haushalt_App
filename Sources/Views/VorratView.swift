@@ -9,6 +9,7 @@ struct VorratView: View {
     @Query(sort: \MealLog.date, order: .reverse) private var logs: [MealLog]
 
     @State private var showAdd = false
+    @State private var showAddHousehold = false
     @State private var showSettings = false
     @State private var selected: Product?
 
@@ -35,23 +36,19 @@ struct VorratView: View {
 
                     MacroCard(totals: f.todayTotals().nutrition, settings: settings)
 
-                    SectionTitle(title: "Deine Basics",
+                    SectionTitle(title: "Lebensmittel",
                                  trailing: summary(empty: empty, low: low),
                                  trailingColor: (empty + low) > 0 ? Theme.warnText : Theme.muted)
 
                     if products.isEmpty {
                         emptyState
                     } else {
-                        LazyVGrid(columns: columns, spacing: 10) {
-                            ForEach(products) { p in
-                                if let st = statuses[p.persistentModelID] {
-                                    Button { selected = p } label: { ProductTile(product: p, status: st) }
-                                        .buttonStyle(.plain)
-                                }
-                            }
-                            Button { showAdd = true } label: { addTile }
-                                .buttonStyle(.plain)
-                        }
+                        grid(products.filter(\.isFood), statuses: statuses) { showAdd = true }
+
+                        SectionTitle(title: "Haushalt",
+                                     trailing: products.contains { !$0.isFood } ? nil : "z. B. Waschmittel")
+                            .padding(.top, 4)
+                        grid(products.filter { !$0.isFood }, statuses: statuses) { showAddHousehold = true }
                     }
                 }
                 .padding(.horizontal, 20)
@@ -61,6 +58,7 @@ struct VorratView: View {
             .background(Theme.ground)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showAdd) { ProductEditView(product: nil) }
+            .sheet(isPresented: $showAddHousehold) { ProductEditView(product: nil, household: true) }
             .sheet(isPresented: $showSettings) { EinstellungenView() }
             .sheet(item: $selected) { p in ProductDetailView(product: p) }
         }
@@ -136,6 +134,19 @@ struct VorratView: View {
         .card(20)
     }
 
+    private func grid(_ items: [Product], statuses: [PersistentIdentifier: Forecast.Status], add: @escaping () -> Void) -> some View {
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(items) { p in
+                if let st = statuses[p.persistentModelID] {
+                    Button { selected = p } label: { ProductTile(product: p, status: st) }
+                        .buttonStyle(.plain)
+                }
+            }
+            Button(action: add) { addTile }
+                .buttonStyle(.plain)
+        }
+    }
+
     private var addTile: some View {
         VStack(spacing: 6) {
             Image(systemName: "plus").font(.system(size: 22, weight: .semibold))
@@ -162,9 +173,10 @@ struct ProductTile: View {
     let status: Forecast.Status
 
     var body: some View {
-        let fraction = product.stock / max(product.refillTo, product.stock, 1)
+        let stock = product.currentStock()
+        let fraction = stock / max(product.refillTo, stock, 1)
         VStack(alignment: .leading, spacing: 8) {
-            EmojiTile(emoji: product.emoji, tint: product.tint)
+            ProductImage(photo: product.photo, emoji: product.emoji, tint: product.tint)
             Text(product.name)
                 .font(.system(size: 13, weight: .bold))
                 .lineLimit(1)
@@ -202,9 +214,9 @@ struct ProductTile: View {
     }
     private var label: String {
         switch status.level {
-        case .leer: "leer · \(product.source.label)"
-        case .knapp: "\(Fmt.amount(product.stock, product.unit)) · knapp"
-        case .ok: "\(Fmt.number(product.stock)) / \(Fmt.amount(product.refillTo, product.unit))"
+        case .leer: "leer · \(product.whereToBuy)"
+        case .knapp: "\(Fmt.amount(product.currentStock(), product.unit)) · knapp"
+        case .ok: "\(Fmt.number(product.currentStock())) / \(Fmt.amount(product.refillTo, product.unit))"
         }
     }
 }

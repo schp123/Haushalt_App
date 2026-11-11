@@ -2,13 +2,21 @@ import SwiftUI
 import SwiftData
 
 struct EinkaufView: View {
+    @Environment(\.modelContext) private var context
     @Query(sort: \Product.sortIndex) private var products: [Product]
     @Query private var plan: [PlanEntry]
     @Query private var settingsList: [AppSettings]
     @Query(sort: \MealLog.date, order: .reverse) private var logs: [MealLog]
 
+    @Query(sort: \WishItem.createdAt, order: .reverse) private var wishes: [WishItem]
+
     @State private var excluded: Set<PersistentIdentifier> = []
     @State private var purchaseSource: Source?
+    @State private var newWish = false
+    @State private var newHousehold = false
+    @State private var editWish: WishItem?
+    @State private var doneWish: WishItem?
+    @State private var showDoneWishes = false
 
     private var settings: AppSettings { settingsList.first ?? AppSettings() }
 
@@ -18,7 +26,23 @@ struct EinkaufView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text("Einkauf").font(.system(size: 30, weight: .heavy)).padding(.top, 12)
+                    HStack(alignment: .bottom) {
+                        Text("Einkauf").font(.system(size: 30, weight: .heavy))
+                        Spacer()
+                        Menu {
+                            Button { newWish = true } label: { Label("Wunsch (einmalig)", systemImage: "gift") }
+                            Button { newHousehold = true } label: { Label("Vorratsprodukt aus anderem Laden", systemImage: "shippingbox") }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 17, weight: .bold))
+                                .frame(width: 44, height: 44)
+                                .background(Theme.card, in: Circle())
+                                .overlay(Circle().stroke(Theme.line))
+                                .foregroundStyle(Theme.ink)
+                        }
+                        .accessibilityLabel("Hinzufügen")
+                    }
+                    .padding(.top, 12)
 
                     listSection(.rewe, f.shoppingList(for: .rewe),
                                 subtitle: "Bestellen \(Fmt.weekdayName(settings.orderWeekday)) · Lieferung \(Fmt.shortDate(f.nextDelivery)), \(settings.deliveryWindow)",
@@ -27,15 +51,21 @@ struct EinkaufView: View {
                                 subtitle: "Einkauf vor Ort · \(Fmt.shortDate(f.nextMetzger))",
                                 info: "Du bekommst am Einkaufstag eine Erinnerung mit der Liste.")
                     let other = f.shoppingList(for: .sonstiges)
-                    if !other.isEmpty {
-                        listSection(.sonstiges, other, subtitle: "Wenn ihr ohnehin unterwegs seid", info: nil)
+                    if !other.isEmpty || products.contains(where: { $0.source == .sonstiges }) {
+                        listSection(.sonstiges, other, subtitle: "Biomarkt, Amazon & Co. – rechtzeitig vor dem Leerwerden", info: nil)
                     }
+
+                    wishSection
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 24)
             }
             .background(Theme.ground)
             .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $newWish) { WishEditView(item: nil) }
+            .sheet(isPresented: $newHousehold) { ProductEditView(product: nil, household: true) }
+            .sheet(item: $editWish) { w in WishEditView(item: w) }
+            .sheet(item: $doneWish) { w in WishDoneView(item: w) }
             .sheet(item: $purchaseSource) { source in
                 PurchaseEditView(source: source,
                                  items: f.shoppingList(for: source).filter { !excluded.contains($0.product.persistentModelID) })
@@ -98,6 +128,58 @@ struct EinkaufView: View {
         }
     }
 
+    private var wishSection: some View {
+        let open = wishes.filter { !$0.done }.sorted {
+            ($0.dueDate ?? .distantFuture, $0.createdAt) < ($1.dueDate ?? .distantFuture, $1.createdAt)
+        }
+        let done = wishes.filter(\.done)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wunschliste").font(.system(size: 20, weight: .heavy))
+                    Text("Einmalige Dinge mit Link, Foto und Erinnerung").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.muted)
+                }
+                Spacer()
+                Button { newWish = true } label: {
+                    Image(systemName: "plus.circle.fill").font(.system(size: 26)).foregroundStyle(Theme.accent)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Neuer Wunsch")
+            }
+            if open.isEmpty {
+                Text("Nichts auf der Wunschliste.")
+                    .font(.system(size: 14)).foregroundStyle(Theme.muted)
+                    .card(14, radius: 18)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(open) { w in
+                        WishRow(item: w, onEdit: { editWish = w }, onDone: { doneWish = w })
+                    }
+                }
+                .padding(.horizontal, 14)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            if !done.isEmpty {
+                Button(showDoneWishes ? "Erledigte ausblenden" : "\(done.count) erledigt anzeigen") { showDoneWishes.toggle() }
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(minHeight: 44)
+                if showDoneWishes {
+                    VStack(spacing: 0) {
+                        ForEach(done) { w in
+                            WishRow(item: w, onEdit: { editWish = w }, onDone: {
+                                w.done = false
+                                w.doneAt = nil
+                                Notifier.evaluate(context)
+                            })
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+            }
+        }
+    }
+
     private func itemRow(_ p: Product, _ st: Forecast.Status) -> some View {
         let isOn = !excluded.contains(p.persistentModelID)
         return Button {
@@ -107,10 +189,10 @@ struct EinkaufView: View {
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22))
                     .foregroundStyle(isOn ? Theme.accent : Theme.line)
-                EmojiTile(emoji: p.emoji, tint: p.tint, size: 36)
+                ProductImage(photo: p.photo, emoji: p.emoji, tint: p.tint, size: 36)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p.name).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
-                    Text("\(st.packages) × \(Fmt.amount(p.packageSize, p.unit))\(p.fallbackName.isEmpty ? "" : " · sonst \(p.fallbackName)")")
+                    Text("\(st.packages) × \(Fmt.amount(p.packageSize, p.unit))\(p.source == .sonstiges && !p.storeName.isEmpty ? " · \(p.storeName)" : "")\(p.fallbackName.isEmpty ? "" : " · sonst \(p.fallbackName)")")
                         .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.muted)
                 }
                 Spacer()
@@ -225,7 +307,7 @@ struct PurchaseEditView: View {
         let src = items.isEmpty ? pickedSource : source
         context.insert(Purchase(date: date, source: src, total: total, itemCount: items.count, note: note))
         for item in items {
-            item.product.stock += item.status.orderAmount
+            item.product.setStock(item.product.currentStock() + item.status.orderAmount)
             item.product.lowNotifiedAt = nil
             item.product.lastCheckedAt = Date()
         }

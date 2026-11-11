@@ -1,8 +1,10 @@
 import SwiftUI
 import VisionKit
+import Vision
 
 /// Barcode-Scanner (Kamera), meldet den ersten erkannten EAN-Code.
 struct BarcodeScannerView: UIViewControllerRepresentable {
+    var symbologies: [VNBarcodeSymbology] = [.ean13, .ean8, .upce]
     var onCode: (String) -> Void
 
     static var isAvailable: Bool {
@@ -11,7 +13,7 @@ struct BarcodeScannerView: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let vc = DataScannerViewController(
-            recognizedDataTypes: [.barcode(symbologies: [.ean13, .ean8, .upce])],
+            recognizedDataTypes: [.barcode(symbologies: symbologies)],
             qualityLevel: .balanced,
             recognizesMultipleItems: false,
             isHighFrameRateTrackingEnabled: false,

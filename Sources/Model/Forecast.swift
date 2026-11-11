@@ -42,7 +42,12 @@ struct Forecast {
     var nextMetzger: Date { nextDate(isoWeekday: settings.metzgerWeekday, after: now) }
 
     func restockDate(for p: Product) -> Date {
-        p.source == .metzger ? nextMetzger : nextDelivery
+        switch p.source {
+        case .rewe: return nextDelivery
+        case .metzger: return nextMetzger
+        case .sonstiges:
+            return cal.date(byAdding: .day, value: max(1, p.leadDays), to: cal.startOfDay(for: now))!
+        }
     }
 
     // MARK: Verbrauch
@@ -55,6 +60,9 @@ struct Forecast {
     func plannedUse(of p: Product, until end: Date) -> Double {
         let done = loggedPlanSlotsToday
         var total = 0.0
+        if p.usagePerWeek > 0 {
+            total += p.usagePerWeek * max(0, end.timeIntervalSince(now)) / (7 * 24 * 3600)
+        }
         var day = cal.startOfDay(for: now)
         while day < end {
             let iso = cal.isoWeekday(day)
@@ -73,10 +81,11 @@ struct Forecast {
 
     func status(_ p: Product) -> Status {
         let date = restockDate(for: p)
-        let projected = p.stock - plannedUse(of: p, until: date)
+        let current = p.currentStock(at: now)
+        let projected = current - plannedUse(of: p, until: date)
         let eps = 0.0001
-        let needs = projected <= p.warnAt + eps || p.stock <= p.warnAt + eps
-        let level: Level = p.stock <= eps ? .leer : (needs ? .knapp : .ok)
+        let needs = projected <= p.warnAt + eps || current <= p.warnAt + eps
+        let level: Level = current <= eps ? .leer : (needs ? .knapp : .ok)
         var packages = 0
         var amount = 0.0
         if needs {
@@ -142,7 +151,10 @@ struct Forecast {
 
 struct BudgetStats {
     let monthStart: Date
+    /// Lebensmittel (REWE + Metzger) – zählt gegen das Budget.
     let spent: Double
+    /// Andere Läden & Wunschliste – separat ausgewiesen.
+    let household: Double
     let bySource: [Source: Double]
     let forecast: Double
     let budget: Double
@@ -155,9 +167,10 @@ struct BudgetStats {
         let start = cal.date(from: cal.dateComponents([.year, .month], from: month))!
         let end = cal.date(byAdding: .month, value: 1, to: start)!
         let inMonth = purchases.filter { $0.date >= start && $0.date < end }
-        let spent = inMonth.reduce(0) { $0 + $1.total }
         var by: [Source: Double] = [:]
         for p in inMonth { by[p.source, default: 0] += p.total }
+        let spent = (by[.rewe] ?? 0) + (by[.metzger] ?? 0)
+        let household = by[.sonstiges] ?? 0
 
         let isCurrent = now >= start && now < end
         let daysInMonth = Double(cal.range(of: .day, in: .month, for: start)?.count ?? 30)
@@ -165,7 +178,7 @@ struct BudgetStats {
         let forecast = isCurrent ? spent / max(daysElapsed, 1) * daysInMonth : spent
         let perWeek = spent / max(daysElapsed / 7, 1)
 
-        return BudgetStats(monthStart: start, spent: spent, bySource: by, forecast: forecast, budget: budget,
+        return BudgetStats(monthStart: start, spent: spent, household: household, bySource: by, forecast: forecast, budget: budget,
                            isCurrentMonth: isCurrent, perWeek: perWeek)
     }
 

@@ -80,10 +80,10 @@ struct CheckView: View {
         }
 
         VStack(spacing: 14) {
-            EmojiTile(emoji: p.emoji, tint: p.tint, size: 88)
+            ProductImage(photo: p.photo, emoji: p.emoji, tint: p.tint, size: 88)
             VStack(spacing: 4) {
                 Text(p.name).font(.system(size: 22, weight: .heavy))
-                Text("Laut App sind noch \(Fmt.amount(p.stock, p.unit)) da. Stimmt das?")
+                Text("Laut App sind noch \(Fmt.amount(p.currentStock(), p.unit)) da. Stimmt das?")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Theme.muted)
                     .multilineTextAlignment(.center)
@@ -193,18 +193,19 @@ struct CheckView: View {
         guard !started else { return }
         started = true
         queue = forecast.checkCandidates()
-        draft = queue.first?.stock ?? 0
+        draft = queue.first?.currentStock() ?? 0
     }
 
     private func answer(_ p: Product, value: Double) {
-        let corrected = abs(value - p.stock) > 0.0001
-        let text = corrected ? "\(Fmt.number(value)) statt \(Fmt.amount(p.stock, p.unit))" : Fmt.amount(value, p.unit)
+        let before = p.currentStock()
+        let corrected = abs(value - before) > 0.0001
+        let text = corrected ? "\(Fmt.number(value)) statt \(Fmt.amount(before, p.unit))" : Fmt.amount(value, p.unit)
         answered.append((name: p.name, text: text, corrected: corrected))
         if corrected { p.lastCorrectedAt = Date() }
-        p.stock = value
+        p.setStock(value)
         p.lastCheckedAt = Date()
         Notifier.evaluate(context)
         index += 1
-        if index < queue.count { draft = queue[index].stock }
+        if index < queue.count { draft = queue[index].currentStock() }
     }
 }

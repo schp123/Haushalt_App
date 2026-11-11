@@ -28,6 +28,7 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             SYMROOT="$PWD/build" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -37,17 +38,17 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Release-iphoneos/Wocheneinkauf.app Payload/
-          zip -qry Wocheneinkauf.ipa Payload
+          zip -qry Kammer.ipa Payload
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Wocheneinkauf-ipa
-          path: Wocheneinkauf.ipa
+          name: Kammer-ipa
+          path: Kammer.ipa
 
       - name: Als Release veröffentlichen (direkter Download aufs iPhone)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Vorrat ${{ github.run_number }}
+          name: Kammer (Build ${{ github.run_number }})
           make_latest: true
-          files: Wocheneinkauf.ipa
+          files: Kammer.ipa

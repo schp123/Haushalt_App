@@ -53,7 +53,7 @@ struct WocheneinkaufApp: App {
         }
         .modelContainer(for: [
             Product.self, PriceRecord.self, MealTemplate.self, Ingredient.self,
-            PlanEntry.self, MealLog.self, Purchase.self, AppSettings.self
+            PlanEntry.self, MealLog.self, Purchase.self, AppSettings.self, WishItem.self, SyncMeta.self
         ])
     }
 }
@@ -86,12 +86,21 @@ struct RootView: View {
             CheckView()
         }
         .task {
+            SyncEngine.shared.attach(context)
             _ = AppSettings.current(context)
             await Notifier.requestAuthorization()
             Notifier.evaluate(context)
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Notifier.evaluate(context) }
+        .task(id: scenePhase) {
+            // Solange die App offen ist: jede Minute Änderungen vom anderen iPhone holen.
+            guard scenePhase == .active else { return }
+            SyncEngine.shared.attach(context)
+            Notifier.evaluate(context)
+            while !Task.isCancelled {
+                await SyncEngine.shared.sync()
+                Notifier.evaluate(context)
+                try? await Task.sleep(for: .seconds(60))
+            }
         }
     }
 }

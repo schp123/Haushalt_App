@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 // MARK: - Detail: Bestand schnell anpassen
 
@@ -24,7 +25,7 @@ struct ProductDetailView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     VStack(spacing: 10) {
-                        EmojiTile(emoji: product.emoji, tint: product.tint, size: 88)
+                        ProductImage(photo: product.photo, emoji: product.emoji, tint: product.tint, size: 88)
                         Text(product.name).font(.system(size: 24, weight: .heavy))
                         Text(statusText(st)).font(.system(size: 14, weight: .medium))
                             .foregroundStyle(st.level == .ok ? Theme.muted : Theme.warnText)
@@ -36,7 +37,7 @@ struct ProductDetailView: View {
                         HStack(spacing: 18) {
                             roundButton("minus", label: "Weniger") { change(-product.unit.step) }
                             VStack(spacing: 0) {
-                                Text(Fmt.number(product.stock)).font(.system(size: 40, weight: .heavy))
+                                Text(Fmt.number(product.currentStock())).font(.system(size: 40, weight: .heavy))
                                 Text(product.unit.label).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.muted)
                             }
                             .frame(minWidth: 90)
@@ -55,16 +56,26 @@ struct ProductDetailView: View {
                     .card(20)
 
                     VStack(spacing: 0) {
-                        row("Bezugsquelle", product.source.label)
+                        row("Bezugsquelle", product.whereToBuy)
+                        if product.usagePerWeek > 0 { row("Verbrauch / Woche", Fmt.amount(product.usagePerWeek, product.unit)) }
                         row("Warnen ab", Fmt.amount(product.warnAt, product.unit))
                         row("Auffüllen auf", Fmt.amount(product.refillTo, product.unit))
                         row("Packung", Fmt.amount(product.packageSize, product.unit))
                         if product.price > 0 { row("Preis / Packung", Fmt.euro(product.price)) }
-                        row("kcal / 100 g", Fmt.number(product.kcal100, maxFraction: 0))
+                        if product.isFood { row("kcal / 100 g", Fmt.number(product.kcal100, maxFraction: 0)) }
                         DatePickerRow(date: $product.bestBefore)
                     }
                     .padding(.horizontal, 14)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                    if let url = URL(string: product.linkURL), !product.linkURL.isEmpty {
+                        Link(destination: url) {
+                            Label("Bei \(product.whereToBuy) öffnen", systemImage: "arrow.up.right.square")
+                                .font(.system(size: 15, weight: .bold))
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                    }
 
                     if product.priceHistory.count > 1 {
                         PriceHistoryView(records: product.priceHistory)
@@ -104,10 +115,10 @@ struct ProductDetailView: View {
         }
     }
 
-    private func change(_ delta: Double) { set(max(0, product.stock + delta)) }
+    private func change(_ delta: Double) { set(max(0, product.currentStock() + delta)) }
 
     private func set(_ value: Double) {
-        product.stock = value
+        product.setStock(value)
         product.lastCorrectedAt = Date()
         product.lastCheckedAt = Date()
         Notifier.evaluate(context)
@@ -188,6 +199,8 @@ struct ProductEditView: View {
     @Query(sort: \Product.sortIndex) private var allProducts: [Product]
 
     let product: Product?
+    /// Neues Produkt aus einem anderen Laden (Waschmittel, Rosmarinöl …) vorbelegen.
+    var household: Bool = false
 
     @State private var query = ""
     @State private var lookupMessage: String?
@@ -213,13 +226,20 @@ struct ProductEditView: View {
     @State private var reweURL = ""
     @State private var barcode = ""
     @State private var fallbackName = ""
+    @State private var isFood = true
+    @State private var storeName = ""
+    @State private var linkURL = ""
+    @State private var photo: Data?
+    @State private var photoItem: PhotosPickerItem?
+    @State private var usagePerWeek: Double = 0
+    @State private var leadDays = 7
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     HStack(spacing: 8) {
-                        TextField("Name, Artikelnummer oder REWE-Link", text: $query)
+                        TextField("Name, Artikelnummer oder Link", text: $query)
                             .textInputAutocapitalization(.sentences)
                             .submitLabel(.search)
                             .onSubmit { Task { await resolve(query) } }
@@ -241,7 +261,7 @@ struct ProductEditView: View {
                         Text(lookupMessage).font(.footnote).foregroundStyle(Theme.muted)
                     }
                 } footer: {
-                    Text("Link bekommst du in der REWE-App über „Teilen“ → „Link kopieren“. Barcode füllt die Nährwerte automatisch.")
+                    Text("REWE-Link: in der REWE-App „Teilen“ → „Link kopieren“. Links von Amazon, Biomarkt & Co. übernehmen Name und Bild. Barcode füllt die Nährwerte.")
                 }
 
                 Section("Produkt") {
@@ -259,10 +279,17 @@ struct ProductEditView: View {
                             }
                         }
                     }
+                    PhotoRow(photo: $photo, item: $photoItem)
                     Picker("Bezugsquelle", selection: $source) {
                         ForEach(Source.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    if source == .sonstiges {
+                        TextField("Laden, z. B. Biomarkt, Amazon, dm", text: $storeName)
+                        TextField("Link zum Produkt", text: $linkURL)
+                            .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    Toggle("Lebensmittel", isOn: $isFood).tint(Theme.accent)
                     Picker("Einheit", selection: $unit) {
                         ForEach(StockUnit.allCases) { Text($0.label).tag($0) }
                     }
@@ -273,21 +300,30 @@ struct ProductEditView: View {
                     numberRow("Warnen ab", $warnAt, unit.short)
                     numberRow("Auffüllen auf", $refillTo, unit.short)
                     numberRow("Menge pro Packung", $packageSize, unit.short)
-                    if !unit.isMass { numberRow("Gramm pro \(unit.label)", $gramsPerUnit, "g") }
+                    if isFood && !unit.isMass { numberRow("Gramm pro \(unit.label)", $gramsPerUnit, "g") }
+                    numberRow("Verbrauch pro Woche", $usagePerWeek, unit.short)
+                    if source == .sonstiges {
+                        Stepper("\(leadDays) Tage vorher warnen", value: $leadDays, in: 1...60)
+                    }
                     numberRow("Preis pro Packung", $price, "€")
                 } header: {
                     Text("Bestand")
                 } footer: {
-                    Text("Gewarnt wird, sobald der Bestand – jetzt oder laut Wochenplan zum nächsten Einkauf – auf „Warnen ab“ fällt.")
+                    Text(source == .sonstiges
+                         ? "Beispiel Waschmittel: Packung = 60 Anwendungen, Verbrauch 6 pro Woche. Die App zieht den Verbrauch automatisch ab und warnt rechtzeitig vor „Warnen ab“."
+                         : "Gewarnt wird, sobald der Bestand – jetzt oder laut Wochenplan zum nächsten Einkauf – auf „Warnen ab“ fällt.")
                 }
 
-                Section("Nährwerte pro 100 g") {
-                    numberRow("Kalorien", $kcal, "kcal")
-                    numberRow("Protein", $protein, "g")
-                    numberRow("Kohlenhydrate", $carbs, "g")
-                    numberRow("Fett", $fat, "g")
+                if isFood {
+                    Section("Nährwerte pro 100 g") {
+                        numberRow("Kalorien", $kcal, "kcal")
+                        numberRow("Protein", $protein, "g")
+                        numberRow("Kohlenhydrate", $carbs, "g")
+                        numberRow("Fett", $fat, "g")
+                    }
                 }
 
+                if source == .rewe {
                 Section {
                     TextField("REWE-Artikelnummer", text: $reweNumber).keyboardType(.numberPad)
                     TextField("Ausweichartikel, falls ausverkauft", text: $fallbackName)
@@ -296,6 +332,7 @@ struct ProductEditView: View {
                     Text("Bestellung")
                 } footer: {
                     Text("Ohne Artikelnummer sucht Claude beim ersten Warenkorb-Lauf auf rewe.de nach dem Namen und speichert die Nummer.")
+                }
                 }
             }
             .navigationTitle(product == nil ? "Produkt hinzufügen" : "Bearbeiten")
@@ -336,6 +373,16 @@ struct ProductEditView: View {
         case .name(let n):
             name = n
             lookupMessage = nil
+        case .link(let url):
+            linkURL = url.absoluteString
+            source = .sonstiges
+            isLooking = true
+            defer { isLooking = false }
+            let preview = await LinkPreview.load(url)
+            if let store = preview.store, storeName.isEmpty { storeName = store }
+            if let title = preview.title, !title.isEmpty { name = String(title.prefix(60)) }
+            if let img = preview.image { photo = ImageTools.jpeg(img) }
+            lookupMessage = preview.title == nil ? "Link gespeichert – Name bitte selbst eintragen." : "Name\(preview.image == nil ? "" : " und Bild") vom Link übernommen."
         case .rewe(let number, let hint, let url):
             reweNumber = number
             reweURL = url ?? ""
@@ -361,13 +408,24 @@ struct ProductEditView: View {
     }
 
     private func loadFromProduct() {
-        guard let p = product else { return }
+        guard let p = product else {
+            if household {
+                source = .sonstiges
+                isFood = false
+                unit = .anwendung
+                emoji = "🧴"
+                emojiTouched = true
+            }
+            return
+        }
         name = p.name; emoji = p.emoji; emojiTouched = true
         source = p.source; unit = p.unit
-        stock = p.stock; warnAt = p.warnAt; refillTo = p.refillTo
+        stock = p.currentStock(); warnAt = p.warnAt; refillTo = p.refillTo
         packageSize = p.packageSize; gramsPerUnit = p.gramsPerUnit; price = p.price
         kcal = p.kcal100; protein = p.protein100; carbs = p.carbs100; fat = p.fat100
         reweNumber = p.reweArticleNumber; reweURL = p.reweURL; barcode = p.barcode; fallbackName = p.fallbackName
+        isFood = p.isFood; storeName = p.storeName; linkURL = p.linkURL; photo = p.photo
+        usagePerWeek = p.usagePerWeek; leadDays = p.leadDays
     }
 
     private func save() {
@@ -383,20 +441,84 @@ struct ProductEditView: View {
         p.emoji = emoji
         p.source = source
         p.unit = unit
-        if p.stock != stock { p.lastCorrectedAt = Date() }
-        p.stock = max(0, stock)
+        if abs(p.currentStock() - stock) > 0.0001 || product == nil {
+            if product != nil { p.lastCorrectedAt = Date() }
+            p.setStock(stock)
+        }
         p.warnAt = max(0, warnAt)
         p.refillTo = max(refillTo, warnAt)
         p.packageSize = max(packageSize, 0.01)
         p.gramsPerUnit = unit.isMass ? 1 : max(gramsPerUnit, 0)
         p.kcal100 = kcal; p.protein100 = protein; p.carbs100 = carbs; p.fat100 = fat
+        if !isFood { p.kcal100 = 0; p.protein100 = 0; p.carbs100 = 0; p.fat100 = 0 }
         p.reweArticleNumber = reweNumber
         p.reweURL = reweURL
         p.barcode = barcode
         p.fallbackName = fallbackName
+        p.isFood = isFood
+        p.storeName = storeName.trimmingCharacters(in: .whitespaces)
+        p.linkURL = linkURL.trimmingCharacters(in: .whitespaces)
+        p.photo = photo
+        p.usagePerWeek = max(0, usagePerWeek)
+        p.leadDays = leadDays
         p.updatePrice(price, context: context)
         p.lowNotifiedAt = nil
         Notifier.evaluate(context)
         dismiss()
+    }
+}
+
+
+// MARK: - Foto wählen (für Produkte und Wunschliste)
+
+struct PhotoRow: View {
+    @Binding var photo: Data?
+    @Binding var item: PhotosPickerItem?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let data = photo, let img = UIImage(data: data) {
+                Image(uiImage: img)
+                    .resizable().scaledToFill()
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            PhotosPicker(selection: $item, matching: .images) {
+                Label(photo == nil ? "Foto hinzufügen" : "Foto ändern", systemImage: "photo")
+            }
+            if photo != nil {
+                Spacer()
+                Button("Entfernen", role: .destructive) { photo = nil }
+                    .buttonStyle(.borderless)
+            }
+        }
+        .onChange(of: item) { _, new in
+            guard let new else { return }
+            Task { @MainActor in
+                if let data = try? await new.loadTransferable(type: Data.self), let img = UIImage(data: data) {
+                    photo = ImageTools.jpeg(img)
+                }
+            }
+        }
+    }
+}
+
+/// Foto oder Emoji – für Kacheln und Listen.
+struct ProductImage: View {
+    var photo: Data?
+    var emoji: String
+    var tint: Color
+    var size: CGFloat = 40
+
+    var body: some View {
+        if let data = photo, let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable().scaledToFill()
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
+                .accessibilityHidden(true)
+        } else {
+            EmojiTile(emoji: emoji, tint: tint, size: size)
+        }
     }
 }

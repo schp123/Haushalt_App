@@ -11,20 +11,20 @@ enum Source: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .rewe: "REWE"
         case .metzger: "Metzger"
-        case .sonstiges: "Sonstiges"
+        case .sonstiges: "Andere Läden"
         }
     }
     var listName: String {
         switch self {
         case .rewe: "REWE-Liste"
         case .metzger: "Metzger-Liste"
-        case .sonstiges: "Einkaufsliste"
+        case .sonstiges: "Besorgen-Liste"
         }
     }
 }
 
 enum StockUnit: String, CaseIterable, Identifiable, Codable {
-    case stueck, gramm, milliliter, becher, packung
+    case stueck, gramm, milliliter, becher, packung, anwendung
     var id: String { rawValue }
     var short: String {
         switch self {
@@ -33,6 +33,7 @@ enum StockUnit: String, CaseIterable, Identifiable, Codable {
         case .milliliter: "ml"
         case .becher: "Becher"
         case .packung: "Pkg"
+        case .anwendung: "Anw."
         }
     }
     var label: String {
@@ -42,6 +43,7 @@ enum StockUnit: String, CaseIterable, Identifiable, Codable {
         case .milliliter: "Milliliter"
         case .becher: "Becher"
         case .packung: "Packung"
+        case .anwendung: "Anwendungen"
         }
     }
     /// Gramm/Milliliter: Nährwerte direkt pro Menge, sonst über "Gramm pro Einheit".
@@ -117,6 +119,16 @@ final class Product {
     var lowNotifiedAt: Date? = nil
     var bestBefore: Date? = nil
     var createdAt: Date = Date()
+    // Haushalt & andere Läden
+    var isFood: Bool = true
+    var storeName: String = ""
+    var linkURL: String = ""
+    @Attribute(.externalStorage) var photo: Data? = nil
+    /// Geschätzter Verbrauch pro Woche (z. B. 6 Wäschen) – wird automatisch abgezogen.
+    var usagePerWeek: Double = 0
+    var stockSetAt: Date? = nil
+    /// Wie viele Tage vorher gewarnt wird (für Produkte aus anderen Läden).
+    var leadDays: Int = 7
 
     @Relationship(deleteRule: .cascade, inverse: \PriceRecord.product)
     var priceHistory: [PriceRecord] = []
@@ -142,6 +154,24 @@ final class Product {
         set { unitRaw = newValue.rawValue }
     }
     var tint: Color { Color(hex: tintHex) }
+
+    /// Bestand jetzt, inklusive geschätztem Verbrauch pro Woche.
+    func currentStock(at now: Date = Date()) -> Double {
+        guard usagePerWeek > 0, let since = stockSetAt else { return stock }
+        let weeks = max(0, now.timeIntervalSince(since)) / (7 * 24 * 3600)
+        return max(0, stock - usagePerWeek * weeks)
+    }
+
+    /// Bestand setzen (setzt auch den Startpunkt für den geschätzten Verbrauch).
+    func setStock(_ value: Double) {
+        stock = max(0, value)
+        stockSetAt = Date()
+    }
+
+    /// Wo das Produkt gekauft wird, für Listen und Hinweise.
+    var whereToBuy: String {
+        source == .sonstiges && !storeName.isEmpty ? storeName : source.label
+    }
 
     func grams(for amount: Double) -> Double { unit.isMass ? amount : amount * gramsPerUnit }
 
@@ -218,6 +248,7 @@ final class Ingredient {
 
 @Model
 final class PlanEntry {
+    var uuid: UUID? = nil
     /// 1 = Montag … 7 = Sonntag
     var weekday: Int = 1
     var slotRaw: String = MealSlot.mittag.rawValue
@@ -231,6 +262,7 @@ final class PlanEntry {
 
 @Model
 final class MealLog {
+    var uuid: UUID? = nil
     var date: Date = Date()
     var slotRaw: String = MealSlot.mittag.rawValue
     var name: String = ""
@@ -260,6 +292,7 @@ final class MealLog {
 
 @Model
 final class Purchase {
+    var uuid: UUID? = nil
     var date: Date = Date()
     var sourceRaw: String = Source.rewe.rawValue
     var total: Double = 0
@@ -273,6 +306,27 @@ final class Purchase {
         self.note = note
     }
     var source: Source { Source(rawValue: sourceRaw) ?? .rewe }
+}
+
+// MARK: - Wunschliste (einmalige Dinge, z. B. Rosmarinöl von Amazon)
+
+@Model
+final class WishItem {
+    var uuid: UUID = UUID()
+    var name: String = ""
+    var note: String = ""
+    var storeName: String = ""
+    var linkURL: String = ""
+    @Attribute(.externalStorage) var photo: Data? = nil
+    var price: Double = 0
+    var dueDate: Date? = nil
+    var done: Bool = false
+    var doneAt: Date? = nil
+    var createdAt: Date = Date()
+    init(name: String) {
+        self.name = name
+        self.createdAt = Date()
+    }
 }
 
 // MARK: - Einstellungen

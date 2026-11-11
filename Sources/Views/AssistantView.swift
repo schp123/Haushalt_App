@@ -145,7 +145,7 @@ struct AssistantView: View {
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField(configured ? "Sprechen oder tippen …" : "Erst OmniRoute einrichten", text: $input, axis: .vertical)
+            TextField(configured ? "Sprechen oder tippen …" : "Erst KI-Verbindung einrichten", text: $input, axis: .vertical)
                 .lineLimit(1...5)
                 .focused($focused)
                 .submitLabel(.send)
@@ -227,12 +227,12 @@ struct AssistantSettingsView: View {
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 SecureField("API-Key (falls gesetzt)", text: $config.apiKey)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("Modell, z. B. auto oder openai/gpt-4o-mini", text: $config.model)
+                TextField("Modell(e), z. B. gemini-3.8-flash, gemini-3.5-flash", text: $config.model)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
             } header: {
-                Text("OmniRoute")
+                Text("KI-Verbindung")
             } footer: {
-                Text("OmniRoute stellt eine OpenAI-kompatible Schnittstelle bereit. Adresse und API-Key findest du im OmniRoute-Dashboard. Das Modell ist der Name einer Route oder eines Modells aus OmniRoute. Die Daten bleiben nur auf diesem iPhone.")
+                Text("Jede OpenAI-kompatible Schnittstelle geht – z. B. Gemini (https://generativelanguage.googleapis.com/v1beta/openai) oder OmniRoute. Mehrere Modelle mit Komma trennen: Ist eins überlastet, nimmt die App automatisch das nächste. Die Daten bleiben nur auf diesem iPhone.")
             }
 
             Section {

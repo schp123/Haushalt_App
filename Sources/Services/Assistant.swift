@@ -36,9 +36,13 @@ enum AssistantError: LocalizedError {
     case notConfigured, badResponse(String), http(Int, String)
     var errorDescription: String? {
         switch self {
-        case .notConfigured: return "Bitte zuerst OmniRoute in den Einstellungen eintragen."
+        case .notConfigured: return "Bitte zuerst die KI-Verbindung in den Einstellungen eintragen."
         case .badResponse(let s): return "Antwort nicht verstanden: \(s.prefix(160))"
-        case .http(let c, let s): return "OmniRoute-Fehler \(c): \(s.prefix(200))"
+        case .http(let c, let s):
+            if c == 503 || c == 429 {
+                return "Das KI-Modell ist gerade überlastet (\(c)). Bitte gleich noch einmal versuchen oder in den Einstellungen ein Ersatzmodell ergänzen."
+            }
+            return "KI-Fehler \(c): \(s.prefix(200))"
         }
     }
 }
@@ -49,7 +53,24 @@ struct ChatMessage: Codable {
 }
 
 enum AssistantClient {
+    /// Mehrere Modelle durch Komma getrennt: bei Überlastung wird das nächste versucht.
     static func complete(_ messages: [ChatMessage], config: AssistantConfig) async throws -> String {
+        let models = config.model.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        var lastError: Error = AssistantError.notConfigured
+        for model in models {
+            for attempt in 0..<2 {
+                do {
+                    return try await completeOnce(messages, config: config, model: model)
+                } catch AssistantError.http(let code, let body) where [429, 500, 502, 503, 504].contains(code) {
+                    lastError = AssistantError.http(code, body)
+                    if attempt == 0 { try? await Task.sleep(for: .seconds(2)) }
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private static func completeOnce(_ messages: [ChatMessage], config: AssistantConfig, model: String) async throws -> String {
         guard config.isConfigured, let url = config.endpoint else { throw AssistantError.notConfigured }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -58,7 +79,7 @@ enum AssistantClient {
         let key = config.apiKey.trimmingCharacters(in: .whitespaces)
         if !key.isEmpty { req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         let body: [String: Any] = [
-            "model": config.model.trimmingCharacters(in: .whitespaces),
+            "model": model,
             "temperature": 0.1,
             "messages": messages.map { ["role": $0.role, "content": $0.content] }
         ]

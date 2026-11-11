@@ -1,4 +1,4 @@
-# Vorrat – Wocheneinkauf-App (Ausbaustufe 1)
+# Kammer – Vorrat, Einkauf & Haushalt
 
 SwiftUI-App für iPhone (iOS 17+). Daten liegen lokal auf dem Gerät (SwiftData).
 
@@ -17,6 +17,25 @@ SwiftUI-App für iPhone (iOS 17+). Daten liegen lokal auf dem Gerät (SwiftData)
 
 Zum Ausprobieren gibt es im leeren Vorrat „Beispiel-Basics laden“ (Nährwerte = grobe Richtwerte).
 
+## Neu in 1.1
+
+- **Name & Icon**: „Kammer“. Bundle-ID bleibt `de.egler.wocheneinkauf`, Build-Nummer zählt automatisch hoch – Updates installieren sich über die alte Version.
+- **Haushalt & andere Läden**: Produkte von Biomarkt, Amazon, dm … mit Laden, Link und Foto. Verbrauch pro Woche (z. B. Waschmittel: 60 Anwendungen, 6 pro Woche) wird automatisch abgezogen; Warnung X Tage vorher.
+- **Wunschliste**: einmalige Dinge mit Link (übernimmt Name, Laden, Bild), Foto, Preis und Erinnerungsdatum. Abhaken bucht den Preis unter „Haushalt & Wünsche“ – getrennt vom Lebensmittel-Budget.
+- **Gemeinsam nutzen**: Supabase-Datenbank, beide iPhones gleichen sich ab (beim Öffnen und jede Minute). Zweites iPhone tritt per QR-Code bei. Die aktuelle Einkaufsliste liegt zusätzlich als Datensatz `shoppinglist` für die REWE-Automatik bereit.
+
+## Datenbank einrichten (einmalig)
+
+1. Kostenloses Projekt auf supabase.com anlegen.
+2. SQL Editor → `supabase/schema.sql` einfügen → Run.
+3. Project Settings → API: Project URL und anon-/publishable-Key kopieren.
+4. In der App: Einstellungen → Gemeinsam nutzen → URL + Key → „Haushalt anlegen“.
+5. Zweites iPhone: Einstellungen → Gemeinsam nutzen → „QR-Code scannen“.
+
+## Neueste Version
+
+Immer unter: https://github.com/schp123/Haushalt_App/releases/latest/download/Kammer.ipa
+
 ## Bauen
 
 ### Variante A – auf dem Mac mit Xcode
@@ -33,6 +52,5 @@ Ordner als Repository auf GitHub hochladen. Der Workflow `.github/workflows/buil
 
 ## Nächste Ausbaustufen
 
-2. **Backend + gemeinsame Nutzung** (Supabase): beide iPhones synchron, Liste für die Automatik abrufbar.
 3. **REWE-Automatik**: geplante Claude-Aufgabe Mittwoch 20:00 auf dem Mac – legt die REWE-Liste über Claude in Chrome in den Warenkorb, speichert gefundene Artikelnummern und Preise, trägt nach der Lieferung den Rechnungsbetrag ein, Push „Warenkorb gefüllt“ über ntfy. Angebots-Hinweise für Stammprodukte.
 4. **Komfort**: Mahlzeit per Foto/Sprache (Claude API), Apple Health, Home-Screen-Widget, Siri-Kurzbefehl „Milch ist leer“.

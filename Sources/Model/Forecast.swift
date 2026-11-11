@@ -67,10 +67,11 @@ struct Forecast {
         while day < end {
             let iso = cal.isoWeekday(day)
             let isToday = cal.isDate(day, inSameDayAs: now)
-            for entry in plan where entry.weekday == iso {
+            for entry in plan where !entry.isDeleted && entry.weekday == iso {
                 if isToday && done.contains(entry.slotRaw) { continue }
-                guard let t = entry.template else { continue }
-                for ing in t.liveIngredients where ing.product?.persistentModelID == p.persistentModelID {
+                guard let t = entry.template, !t.isDeleted else { continue }
+                for ing in t.liveIngredients {
+                    guard let ip = ing.product, !ip.isDeleted, ip.persistentModelID == p.persistentModelID else { continue }
                     total += ing.amount
                 }
             }
@@ -90,8 +91,9 @@ struct Forecast {
         var amount = 0.0
         if needs {
             let need = max(p.refillTo - max(projected, 0), 0)
-            let size = max(p.packageSize, eps)
-            packages = max(1, Int((need / size).rounded(.up)))
+            let size = p.packageSize.isFinite ? max(p.packageSize, eps) : 1
+            let raw = (need / size).rounded(.up)
+            packages = raw.isFinite ? max(1, min(Int(min(raw, 999)), 999)) : 1
             amount = Double(packages) * size
         }
         return Status(level: level, projected: projected, restockDate: date, packages: packages, orderAmount: amount)

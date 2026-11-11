@@ -417,7 +417,7 @@ final class SyncEngine {
 
     // MARK: Lokale Daten → Datensätze
 
-    private func localRecords(_ ctx: ModelContext) -> [LocalRecord] {
+    private func localRecords(_ ctx: ModelContext, includeShoppingList: Bool = false) -> [LocalRecord] {
         var out: [LocalRecord] = []
         func add<T: Encodable>(_ kind: RecordKind, _ id: UUID, _ dto: T) {
             guard let data = try? Coding.encoder.encode(dto) else { return }
@@ -456,20 +456,24 @@ final class SyncEngine {
         let s = AppSettings.current(ctx)
         add(.settings, StableID.settings, dto(s))
 
-        // Einkaufsliste für die REWE-Automatik
-        SyncTrace.step("Lokal lesen: Einkaufsliste")
+        // Einkaufsliste für die REWE-Automatik (nur beim Hochladen nötig)
+        guard includeShoppingList else { return out }
+        SyncTrace.step("Einkaufsliste: Prognose")
         let f = Forecast(products: products, plan: plan, settings: s, logs: logs)
         func items(_ src: Source) -> [ShoppingItemDTO] {
-            f.shoppingList(for: src).map { e in
+            SyncTrace.step("Einkaufsliste: \(src.label)")
+            return f.shoppingList(for: src).map { e in
                 ShoppingItemDTO(product: e.product.uuid, name: e.product.name, reweArticleNumber: e.product.reweArticleNumber,
                                 reweURL: e.product.reweURL, packages: e.status.packages, packageSize: e.product.packageSize,
                                 unit: e.product.unit.label, fallbackName: e.product.fallbackName,
                                 store: e.product.whereToBuy, link: e.product.linkURL)
             }
         }
+        let rewe = items(.rewe), metzger = items(.metzger), andere = items(.sonstiges)
+        SyncTrace.step("Einkaufsliste: speichern")
         add(.shoppinglist, StableID.shoppingList,
             ShoppingListDTO(deliveryDate: f.nextDelivery, deliveryWindow: s.deliveryWindow,
-                            rewe: items(.rewe), metzger: items(.metzger), andere: items(.sonstiges)))
+                            rewe: rewe, metzger: metzger, andere: andere))
         return out
     }
 
@@ -505,9 +509,12 @@ final class SyncEngine {
         let rows = try await client.pull(since: since)
         guard !rows.isEmpty else { return }
 
+        SyncTrace.step("Herunterladen: \(rows.count) Datensätze vergleichen")
         let local = Dictionary(localRecords(ctx).map { ($0.key, $0.hash) }, uniquingKeysWith: { a, _ in a })
+        SyncTrace.step("Herunterladen: Stand laden")
         let metas = Dictionary(((try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? []).map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
 
+        SyncTrace.step("Herunterladen: Produkte & Vorlagen laden")
         var products = Dictionary(((try? ctx.fetch(FetchDescriptor<Product>())) ?? []).map { ($0.uuid, $0) }, uniquingKeysWith: { a, _ in a })
         var templates = Dictionary(((try? ctx.fetch(FetchDescriptor<MealTemplate>())) ?? []).map { ($0.uuid, $0) }, uniquingKeysWith: { a, _ in a })
 
@@ -519,6 +526,7 @@ final class SyncEngine {
         for r in sorted {
             guard let kind = RecordKind(rawValue: r.kind), kind != .shoppinglist else { continue }
             let key = "\(kind.rawValue):\(r.id.uuidString)"
+            SyncTrace.step("Herunterladen: prüfen \(kind.rawValue) \(r.id.uuidString.prefix(8))")
             let meta = metas[key]
             // Eigene, schon abgeglichene Daten nicht erneut einspielen.
             if !r.deleted, let m = meta, let rh = normalizedHash(kind, r.data), m.hash == rh { continue }
@@ -548,6 +556,7 @@ final class SyncEngine {
             let key = "\(kind.rawValue):\(r.id.uuidString)"
             guard let h = afterLocal[key] else { continue }
             if skipped.contains(key) { continue } // lokal geändert – wird gleich hochgeladen
+            SyncTrace.step("Stand merken: \(kind.rawValue) \(r.id.uuidString.prefix(8))")
             if let m = metasNow[key] { m.hash = h } else { ctx.insert(SyncMeta(key: key, hash: h)) }
         }
         if !newest.isEmpty { cursor = newest }
@@ -687,7 +696,9 @@ final class SyncEngine {
     // MARK: Push
 
     private func push(_ client: SupabaseClient, _ ctx: ModelContext) async throws {
-        let records = localRecords(ctx)
+        SyncTrace.step("Hochladen: lokal lesen")
+        let records = localRecords(ctx, includeShoppingList: true)
+        SyncTrace.step("Hochladen: Änderungen ermitteln")
         let metaList = (try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? []
         let metas = Dictionary(metaList.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         let localKeys = Set(records.map(\.key))
@@ -703,7 +714,9 @@ final class SyncEngine {
 
         let payload: [(kind: String, id: UUID, data: Data?, deleted: Bool)] = changed.map { (kind: $0.kind.rawValue, id: $0.id, data: Optional($0.data), deleted: false) }
             + deletions.map { (kind: $0.kind, id: $0.id, data: Data?.none, deleted: true) }
+        SyncTrace.step("Hochladen: \(payload.count) senden")
         try await client.push(payload)
+        SyncTrace.step("Hochladen: Stand merken")
 
         for r in changed {
             if let m = metas[r.key] { m.hash = r.hash } else { ctx.insert(SyncMeta(key: r.key, hash: r.hash)) }

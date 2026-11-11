@@ -12,6 +12,7 @@ final class Router {
     var tab: AppTab = .vorrat
     var showCheck = false
     var showAssistant = false
+    var showReweCart = false
     var openCheckAfterAssistant = false
 }
 
@@ -37,6 +38,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             case "check": Router.shared.showCheck = true
             case "einkauf": Router.shared.tab = .einkauf
             case "ausgaben": Router.shared.tab = .ausgaben
+            case "rewecart":
+                Router.shared.tab = .einkauf
+                Router.shared.showReweCart = true
             default: break
             }
         }
@@ -103,6 +107,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $router.showAssistant) {
             AssistantView()
+        }
+        .fullScreenCover(isPresented: $router.showReweCart) {
+            ReweCartView()
         }
         .task {
             SyncEngine.shared.attach(context)

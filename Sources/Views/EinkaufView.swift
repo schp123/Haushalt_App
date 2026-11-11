@@ -46,9 +46,29 @@ struct EinkaufView: View {
 
                     ShoppingListSection()
 
+                    Button { Router.shared.showReweCart = true } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "cart.badge.plus")
+                                .font(.system(size: 20, weight: .semibold))
+                                .frame(width: 44, height: 44)
+                                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("REWE-Warenkorb füllen").font(.system(size: 16, weight: .bold))
+                                Text("\(f.shoppingList(for: .rewe).count) Vorratsartikel + Einträge der Einkaufsliste")
+                                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.mutedOnDark)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.system(size: 14, weight: .bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(14)
+                        .background(Theme.ink, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
                     listSection(.rewe, f.shoppingList(for: .rewe),
                                 subtitle: "Bestellen \(Fmt.weekdayName(settings.orderWeekday)) · Lieferung \(Fmt.shortDate(f.nextDelivery)), \(settings.deliveryWindow)",
-                                info: "Der Warenkorb wird \(Fmt.weekdayName(settings.cartFillWeekday)) um \(Fmt.time(settings.cartFillHour, settings.cartFillMinute)) automatisch auf rewe.de befüllt – du tippst nur noch auf „Bestellen“.")
+                                info: "\(Fmt.weekdayName(settings.cartFillWeekday)) um \(Fmt.time(settings.cartFillHour, settings.cartFillMinute)) erinnert dich Kammer – ein Tipp füllt den Warenkorb, bestellen tust du in der REWE-App.")
                     listSection(.metzger, f.shoppingList(for: .metzger),
                                 subtitle: "Einkauf vor Ort · \(Fmt.shortDate(f.nextMetzger))",
                                 info: "Du bekommst am Einkaufstag eine Erinnerung mit der Liste.")

@@ -51,7 +51,7 @@ private struct SettingsForm: View {
             } header: {
                 Text("REWE Lieferservice")
             } footer: {
-                Text("Zu dieser Zeit legt die Automatik auf deinem Mac die Liste in den REWE-Warenkorb. Den Mac dann bitte eingeschaltet lassen.")
+                Text("Zu dieser Zeit erinnert dich Kammer – ein Tipp auf die Nachricht öffnet „REWE-Warenkorb füllen“.")
             }
 
             Section("Metzger") {

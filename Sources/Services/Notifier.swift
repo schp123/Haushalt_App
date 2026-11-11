@@ -23,6 +23,7 @@ enum Notifier {
         let forecast = Forecast(products: products, plan: plan, settings: settings, logs: logs)
 
         scheduleDailyCheck(settings)
+        scheduleCartFill(settings, count: forecast.shoppingList(for: .rewe).count)
         checkLowStock(products: products, forecast: forecast, settings: settings)
         scheduleBestBefore(products)
         scheduleMetzger(forecast: forecast, settings: settings)
@@ -47,6 +48,25 @@ enum Notifier {
         dc.minute = s.checkMinute
         let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: true)
         center.add(UNNotificationRequest(identifier: "daily-check", content: content, trigger: trigger))
+    }
+
+    // MARK: REWE-Warenkorb (wöchentlich)
+
+    static func scheduleCartFill(_ s: AppSettings, count: Int) {
+        center.removePendingNotificationRequests(withIdentifiers: ["rewe-cart"])
+        let content = UNMutableNotificationContent()
+        content.title = "🛒 Zeit für den REWE-Warenkorb"
+        content.body = count > 0
+            ? "\(count) Artikel stehen auf der REWE-Liste. Tippen zum Befüllen."
+            : "Tippen, um die REWE-Liste in den Warenkorb zu legen."
+        content.sound = .default
+        content.userInfo = ["route": "rewecart"]
+        var dc = DateComponents()
+        dc.weekday = s.cartFillWeekday % 7 + 1 // 1 = Sonntag bei Apple
+        dc.hour = s.cartFillHour
+        dc.minute = s.cartFillMinute
+        center.add(UNNotificationRequest(identifier: "rewe-cart", content: content,
+                                         trigger: UNCalendarNotificationTrigger(dateMatching: dc, repeats: true)))
     }
 
     // MARK: Knapp-Warnung

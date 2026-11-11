@@ -29,6 +29,14 @@ struct EinstellungenView: View {
     }
 }
 
+enum AppInfo {
+    static var version: String {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(v) (Build \(b))"
+    }
+}
+
 private struct SettingsForm: View {
     @Bindable var s: AppSettings
 
@@ -92,6 +100,10 @@ private struct SettingsForm: View {
                 Text("Haushalt")
             } footer: {
                 Text("Beide iPhones teilen Vorrat, Listen, Wunschliste, Wochenplan und Ausgaben.")
+            }
+
+            Section {
+                LabeledContent("Version", value: AppInfo.version)
             }
         }
         .environment(\.locale, Fmt.de)

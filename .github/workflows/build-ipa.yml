@@ -29,6 +29,7 @@ jobs:
             -sdk iphoneos \
             SYMROOT="$PWD/build" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            MARKETING_VERSION=1.${{ github.run_number }} \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -49,6 +50,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Kammer (Build ${{ github.run_number }})
+          name: Kammer 1.${{ github.run_number }}
           make_latest: true
           files: Kammer.ipa

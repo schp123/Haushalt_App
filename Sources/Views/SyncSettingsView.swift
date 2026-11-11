@@ -59,6 +59,13 @@ struct SyncSettingsView: View {
             }
             Button("Jetzt abgleichen") { Task { await engine.sync(manual: true) } }
                 .disabled(engine.isSyncing)
+            if let step = engine.crashStep {
+                Text("Letzter Abbruch bei: \(step)")
+                    .font(.footnote).foregroundStyle(Theme.warnText)
+                    .textSelection(.enabled)
+                Button("Abgleich zurücksetzen (dieses iPhone gewinnt)") { Task { await engine.reset() } }
+                    .disabled(engine.isSyncing)
+            }
         }
 
         Section {

@@ -249,7 +249,7 @@ struct SupabaseClient {
         return rows.compactMap { row in
             guard let kind = row["kind"] as? String,
                   let ids = row["id"] as? String, let id = UUID(uuidString: ids),
-                  let obj = row["data"],
+                  let obj = row["data"], JSONSerialization.isValidJSONObject(obj),
                   let d = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
             return Remote(kind: kind, id: id, data: d, deleted: row["deleted"] as? Bool ?? false,
                           updatedAt: row["updated_at"] as? String ?? "")
@@ -268,6 +268,7 @@ struct SupabaseClient {
         var start = 0
         while start < rows.count {
             let chunk = Array(rows[start..<min(start + 40, rows.count)])
+            guard JSONSerialization.isValidJSONObject(chunk) else { throw SyncError.http(0, "Ungültige Daten beim Hochladen") }
             let body = try JSONSerialization.data(withJSONObject: chunk)
             _ = try await send(try request("records", query: [URLQueryItem(name: "on_conflict", value: "household_id,id")],
                                            method: "POST", body: body, prefer: "resolution=merge-duplicates,return=minimal"))
@@ -278,6 +279,13 @@ struct SupabaseClient {
     func check() async throws {
         _ = try await send(try request("records", query: [URLQueryItem(name: "select", value: "id"), URLQueryItem(name: "limit", value: "1")]))
     }
+}
+
+// MARK: - Diagnose: letzter Schritt vor einem Absturz
+
+enum SyncTrace {
+    static func step(_ s: String) { UserDefaults.standard.set(s, forKey: "sync.step") }
+    static var last: String? { UserDefaults.standard.string(forKey: "sync.step") }
 }
 
 // MARK: - Sync-Engine
@@ -341,8 +349,22 @@ final class SyncEngine {
     private(set) var paused: Bool = {
         let crashed = UserDefaults.standard.bool(forKey: "sync.running")
         UserDefaults.standard.set(false, forKey: "sync.running")
+        if crashed { UserDefaults.standard.set(SyncTrace.last, forKey: "sync.crashStep") }
         return crashed
     }()
+
+    /// Schritt, bei dem der letzte Abgleich abgebrochen ist (für die Fehlersuche).
+    var crashStep: String? { UserDefaults.standard.string(forKey: "sync.crashStep") }
+
+    /// Abgleich-Stand zurücksetzen: beim nächsten Abgleich gewinnt alles, was auf diesem iPhone ist.
+    func reset() async {
+        guard let ctx = context else { return }
+        UserDefaults.standard.removeObject(forKey: "sync.cursor")
+        UserDefaults.standard.removeObject(forKey: "sync.crashStep")
+        for m in (try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? [] { ctx.delete(m) }
+        try? ctx.save()
+        await sync(manual: true)
+    }
 
     func sync(manual: Bool = false) async {
         guard let config, let ctx = context, !isSyncing else { return }
@@ -361,12 +383,19 @@ final class SyncEngine {
         }
         let client = SupabaseClient(config: config)
         do {
+            SyncTrace.step("IDs prüfen")
             ensureIDs(ctx)
-            try await pull(client, ctx)
-            try await push(client, ctx)
             try? ctx.save()
+            SyncTrace.step("Herunterladen")
+            try await pull(client, ctx)
+            SyncTrace.step("Hochladen")
+            try await push(client, ctx)
+            SyncTrace.step("Speichern")
+            try? ctx.save()
+            SyncTrace.step("fertig")
             lastSync = Date()
             lastError = nil
+            UserDefaults.standard.removeObject(forKey: "sync.crashStep")
         } catch {
             lastError = error.localizedDescription
         }
@@ -394,18 +423,22 @@ final class SyncEngine {
             guard let data = try? Coding.encoder.encode(dto) else { return }
             out.append(LocalRecord(kind: kind, id: id, data: data, hash: Coding.hash(data)))
         }
-        let products = (try? ctx.fetch(FetchDescriptor<Product>())) ?? []
-        for p in products { add(.product, p.uuid, dto(p)) }
+        SyncTrace.step("Lokal lesen: Produkte")
+        let products = ((try? ctx.fetch(FetchDescriptor<Product>())) ?? []).filter { !$0.isDeleted }
+        for p in products { SyncTrace.step("Lokal lesen: Produkt \(p.name)"); add(.product, p.uuid, dto(p)) }
+        SyncTrace.step("Lokal lesen: Vorlagen")
         for t in (try? ctx.fetch(FetchDescriptor<MealTemplate>())) ?? [] {
             let ings = t.liveIngredients.compactMap { i in i.product.map { IngredientDTO(product: $0.uuid, amount: i.amount) } }
                 .sorted { ($0.product.uuidString, $0.amount) < ($1.product.uuidString, $1.amount) }
             add(.template, t.uuid, TemplateDTO(name: t.name, emoji: t.emoji, ingredients: ings))
         }
-        let plan = (try? ctx.fetch(FetchDescriptor<PlanEntry>())) ?? []
+        SyncTrace.step("Lokal lesen: Wochenplan")
+        let plan = ((try? ctx.fetch(FetchDescriptor<PlanEntry>())) ?? []).filter { !$0.isDeleted }
         for e in plan {
             add(.plan, e.uuid ?? StableID.plan(e.weekday, e.slotRaw), PlanDTO(weekday: e.weekday, slot: e.slotRaw, template: e.template?.uuid))
         }
-        let logs = (try? ctx.fetch(FetchDescriptor<MealLog>())) ?? []
+        SyncTrace.step("Lokal lesen: Mahlzeiten, Einkäufe, Wünsche")
+        let logs = ((try? ctx.fetch(FetchDescriptor<MealLog>())) ?? []).filter { !$0.isDeleted }
         for l in logs {
             guard let id = l.uuid else { continue }
             add(.meallog, id, MealLogDTO(date: l.date, slot: l.slotRaw, name: l.name, emoji: l.emoji, kcal: l.kcal,
@@ -424,6 +457,7 @@ final class SyncEngine {
         add(.settings, StableID.settings, dto(s))
 
         // Einkaufsliste für die REWE-Automatik
+        SyncTrace.step("Lokal lesen: Einkaufsliste")
         let f = Forecast(products: products, plan: plan, settings: s, logs: logs)
         func items(_ src: Source) -> [ShoppingItemDTO] {
             f.shoppingList(for: src).map { e in
@@ -494,15 +528,19 @@ final class SyncEngine {
                 continue
             }
             if r.deleted {
+                SyncTrace.step("Löschen: \(kind.rawValue) \(r.id.uuidString.prefix(8))")
                 delete(kind, r.id, ctx, products: &products, templates: &templates)
                 if let meta { ctx.delete(meta) }
                 continue
             }
+            SyncTrace.step("Einspielen: \(kind.rawValue) \(r.id.uuidString.prefix(8))")
             apply(kind, r.id, r.data, ctx, products: &products, templates: &templates)
         }
+        SyncTrace.step("Speichern nach dem Einspielen")
         try? ctx.save()
 
         // Sync-Stand für alles Eingespielte festhalten
+        SyncTrace.step("Stand merken")
         let afterLocal = Dictionary(localRecords(ctx).map { ($0.key, $0.hash) }, uniquingKeysWith: { a, _ in a })
         let metasNow = Dictionary(((try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? []).map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         for r in sorted {

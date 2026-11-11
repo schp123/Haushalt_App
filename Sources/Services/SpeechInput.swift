@@ -3,7 +3,7 @@ import Speech
 import AVFoundation
 import Observation
 
-/// Eingebaute Spracherkennung (Deutsch): zuhören, live mitschreiben, nach einer kurzen Pause automatisch abschicken.
+/// Eingebaute Spracherkennung (Deutsch): zuhören und live mitschreiben, bis du selbst auf „Fertig“ tippst.
 @MainActor
 @Observable
 final class SpeechInput {
@@ -12,6 +12,8 @@ final class SpeechInput {
     var error: String?
 
     @ObservationIgnored var onFinished: ((String) -> Void)?
+    /// iOS hat die Erkennung von sich aus beendet (z. B. Zeitlimit) – Text bleibt stehen, wird aber nicht gesendet.
+    @ObservationIgnored var onInterrupted: ((String) -> Void)?
     @ObservationIgnored private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "de-DE"))
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -54,13 +56,9 @@ final class SpeechInput {
 
             task = recognizer.recognitionTask(with: req, resultHandler: Self.resultHandler { [weak self] text, final, failed in
                 guard let self, self.isListening else { return }
-                if let text, !text.isEmpty {
-                    self.transcript = text
-                    self.armSilence(seconds: 1.6)
-                }
-                if final || failed { self.finish() }
+                if let text, !text.isEmpty { self.transcript = text }
+                if final || failed { self.interrupted() }
             })
-            armSilence(seconds: 7) // nichts gesagt → nach 7 s aufhören
         } catch {
             self.error = "Das Mikrofon konnte nicht gestartet werden."
             stop()
@@ -75,6 +73,13 @@ final class SpeechInput {
         if !text.isEmpty { onFinished?(text) }
     }
 
+    private func interrupted() {
+        guard isListening else { return }
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        stop()
+        if !text.isEmpty { onInterrupted?(text) }
+    }
+
     /// Zuhören abbrechen, ohne etwas zu senden.
     func stop() {
         silence?.cancel()
@@ -87,15 +92,6 @@ final class SpeechInput {
         task = nil
         isListening = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
-
-    private func armSilence(seconds: Double) {
-        silence?.cancel()
-        silence = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(seconds))
-            guard !Task.isCancelled else { return }
-            self?.finish()
-        }
     }
 
     // MARK: Hilfen außerhalb des Main Actors (Audio läuft auf eigenen Threads)

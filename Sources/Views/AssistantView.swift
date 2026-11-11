@@ -73,6 +73,10 @@ struct AssistantView: View {
                     input = text
                     send()
                 }
+                speech.onInterrupted = { text in
+                    input = text
+                    speech.error = "Aufnahme beendet – prüfen und mit dem Pfeil senden oder weitersprechen."
+                }
                 // Direkt zuhören, sobald der Assistent aufgeht
                 if configured { Task { await speech.start() } } else { showSettings = true }
             }
@@ -83,7 +87,7 @@ struct AssistantView: View {
     private var intro: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Sag einfach, was zu tun ist").font(.system(size: 20, weight: .heavy))
-            Text("Tippe auf das Mikrofon und sprich – nach einer kurzen Pause wird automatisch gesendet. Tippen geht natürlich auch (auch mit Wispr Flow).")
+            Text("Tippe auf das Mikrofon und sprich so lange du willst. Wenn du fertig bist, tippe auf den roten Knopf – dann wird gesendet. Tippen geht natürlich auch (auch mit Wispr Flow).")
                 .font(.system(size: 14)).foregroundStyle(Theme.muted)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(["„Milch ist leer, Eier haben wir noch vier“",
@@ -158,7 +162,7 @@ struct AssistantView: View {
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(Theme.warn)
                         .symbolEffect(.variableColor.iterative, isActive: true)
-                    Text(speech.transcript.isEmpty ? "Ich höre zu …" : speech.transcript)
+                    Text(speech.transcript.isEmpty ? "Ich höre zu … tippe auf den roten Knopf, wenn du fertig bist." : speech.transcript)
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(speech.transcript.isEmpty ? Theme.muted : Theme.ink)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -178,14 +182,14 @@ struct AssistantView: View {
                 focused = false
                 speech.toggle()
             } label: {
-                Image(systemName: speech.isListening ? "stop.fill" : "mic.fill")
+                Image(systemName: speech.isListening ? "paperplane.fill" : "mic.fill")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 52, height: 52)
                     .background(speech.isListening ? Theme.warn : Theme.ink, in: Circle())
             }
             .disabled(!configured || busy)
-            .accessibilityLabel(speech.isListening ? "Zuhören beenden" : "Sprechen")
+            .accessibilityLabel(speech.isListening ? "Fertig – senden" : "Sprechen")
             TextField(configured ? "Sprechen oder tippen …" : "Erst KI-Verbindung einrichten", text: $input, axis: .vertical)
                 .lineLimit(1...5)
                 .focused($focused)

@@ -312,7 +312,7 @@ final class SyncEngine {
             for m in (try? ctx.fetch(FetchDescriptor<SyncMeta>())) ?? [] { ctx.delete(m) }
             try? ctx.save()
         }
-        await sync()
+        await sync(manual: true)
     }
 
     func disconnect() {
@@ -337,10 +337,28 @@ final class SyncEngine {
         }
     }
 
-    func sync() async {
+    /// Wurde der letzte Abgleich unterbrochen (z. B. Absturz), startet er nicht automatisch erneut.
+    private(set) var paused: Bool = {
+        let crashed = UserDefaults.standard.bool(forKey: "sync.running")
+        UserDefaults.standard.set(false, forKey: "sync.running")
+        return crashed
+    }()
+
+    func sync(manual: Bool = false) async {
         guard let config, let ctx = context, !isSyncing else { return }
+        if paused {
+            guard manual else {
+                lastError = "Der letzte Abgleich wurde unterbrochen. Bitte „Jetzt abgleichen“ tippen."
+                return
+            }
+            paused = false
+        }
         isSyncing = true
-        defer { isSyncing = false }
+        UserDefaults.standard.set(true, forKey: "sync.running")
+        defer {
+            isSyncing = false
+            UserDefaults.standard.set(false, forKey: "sync.running")
+        }
         let client = SupabaseClient(config: config)
         do {
             ensureIDs(ctx)
@@ -379,7 +397,7 @@ final class SyncEngine {
         let products = (try? ctx.fetch(FetchDescriptor<Product>())) ?? []
         for p in products { add(.product, p.uuid, dto(p)) }
         for t in (try? ctx.fetch(FetchDescriptor<MealTemplate>())) ?? [] {
-            let ings = t.ingredients.compactMap { i in i.product.map { IngredientDTO(product: $0.uuid, amount: i.amount) } }
+            let ings = t.liveIngredients.compactMap { i in i.product.map { IngredientDTO(product: $0.uuid, amount: i.amount) } }
                 .sorted { ($0.product.uuidString, $0.amount) < ($1.product.uuidString, $1.amount) }
             add(.template, t.uuid, TemplateDTO(name: t.name, emoji: t.emoji, ingredients: ings))
         }
@@ -431,7 +449,7 @@ final class SyncEngine {
                    lastCorrectedAt: p.lastCorrectedAt, bestBefore: p.bestBefore, isFood: p.isFood,
                    storeName: p.storeName, linkURL: p.linkURL, photo: p.photo?.base64EncodedString(),
                    usagePerWeek: p.usagePerWeek, leadDays: p.leadDays,
-                   prices: p.priceHistory.sorted { $0.date < $1.date }.map { PricePoint(date: $0.date, price: $0.price) })
+                   prices: p.priceHistory.filter { !$0.isDeleted }.sorted { $0.date < $1.date }.map { PricePoint(date: $0.date, price: $0.price) })
     }
 
     private func dto(_ s: AppSettings) -> SettingsDTO {
@@ -468,6 +486,8 @@ final class SyncEngine {
             guard let kind = RecordKind(rawValue: r.kind), kind != .shoppinglist else { continue }
             let key = "\(kind.rawValue):\(r.id.uuidString)"
             let meta = metas[key]
+            // Eigene, schon abgeglichene Daten nicht erneut einspielen.
+            if !r.deleted, let m = meta, let rh = normalizedHash(kind, r.data), m.hash == rh { continue }
             // Lokal geändert und noch nicht hochgeladen? Dann gewinnt die lokale Änderung.
             if let lh = local[key], meta == nil || meta?.hash != lh {
                 skipped.insert(key)
@@ -518,9 +538,11 @@ final class SyncEngine {
             p.lastCorrectedAt = d.lastCorrectedAt; p.bestBefore = d.bestBefore; p.isFood = d.isFood
             p.storeName = d.storeName; p.linkURL = d.linkURL; p.photo = d.photo.flatMap { Data(base64Encoded: $0) }
             p.usagePerWeek = d.usagePerWeek; p.leadDays = d.leadDays
-            let existing = p.priceHistory.sorted { $0.date < $1.date }.map { PricePoint(date: $0.date, price: $0.price) }
+            let live = p.priceHistory.filter { !$0.isDeleted }
+            let existing = live.sorted { $0.date < $1.date }.map { PricePoint(date: $0.date, price: $0.price) }
             if existing.map(\.price) != d.prices.map(\.price) {
-                for r in p.priceHistory { ctx.delete(r) }
+                p.priceHistory.removeAll()
+                for r in live { r.product = nil; ctx.delete(r) }
                 for pp in d.prices {
                     let r = PriceRecord(date: pp.date, price: pp.price)
                     ctx.insert(r)
@@ -536,14 +558,15 @@ final class SyncEngine {
                 return n
             }()
             templates[id] = t
-            t.name = d.name; t.emoji = d.emoji
-            for i in t.ingredients { ctx.delete(i) }
-            for i in d.ingredients {
-                guard let p = products[i.product] else { continue }
-                let ing = Ingredient(amount: i.amount)
-                ctx.insert(ing)
-                ing.product = p
-                ing.template = t
+            if t.name != d.name { t.name = d.name }
+            if t.emoji != d.emoji { t.emoji = d.emoji }
+            let current = t.liveIngredients.compactMap { i in i.product.map { "\($0.uuid.uuidString)|\(i.amount)" } }.sorted()
+            let wanted = d.ingredients.map { "\($0.product.uuidString)|\($0.amount)" }.sorted()
+            if current != wanted {
+                let items: [(product: Product, amount: Double)] = d.ingredients.compactMap { i in
+                    products[i.product].map { (product: $0, amount: i.amount) }
+                }
+                t.setIngredients(items, context: ctx)
             }
         case .plan:
             guard let d = try? dec.decode(PlanDTO.self, from: data) else { return }
@@ -648,6 +671,24 @@ final class SyncEngine {
             if let m = metas[r.key] { m.hash = r.hash } else { ctx.insert(SyncMeta(key: r.key, hash: r.hash)) }
         }
         for m in metaList where !localKeys.contains(m.key) { ctx.delete(m) }
+    }
+
+    /// Hash eines Server-Datensatzes im selben Format wie lokal (sortierte Schlüssel).
+    private func normalizedHash(_ kind: RecordKind, _ data: Data) -> String? {
+        func h<T: Codable>(_ type: T.Type) -> String? {
+            guard let v = try? Coding.decoder.decode(type, from: data), let d = try? Coding.encoder.encode(v) else { return nil }
+            return Coding.hash(d)
+        }
+        switch kind {
+        case .product: return h(ProductDTO.self)
+        case .template: return h(TemplateDTO.self)
+        case .plan: return h(PlanDTO.self)
+        case .meallog: return h(MealLogDTO.self)
+        case .purchase: return h(PurchaseDTO.self)
+        case .wish: return h(WishDTO.self)
+        case .settings: return h(SettingsDTO.self)
+        case .shoppinglist: return nil
+        }
     }
 
     // MARK: Zeit

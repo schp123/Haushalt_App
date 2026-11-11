@@ -315,27 +315,24 @@ struct TemplateEditView: View {
         }
         name = t.name
         emoji = t.emoji
-        rows = t.ingredients.map { Row(product: $0.product, amount: $0.amount) }
+        rows = t.liveIngredients.map { Row(product: $0.product, amount: $0.amount) }
     }
 
     private func save() {
         let t: MealTemplate
         if let existing = template {
             t = existing
-            for ing in t.ingredients { context.delete(ing) }
         } else {
             t = MealTemplate(name: name, emoji: emoji)
             context.insert(t)
         }
         t.name = name
         t.emoji = emoji
-        for r in rows {
-            guard let p = r.product, r.amount > 0 else { continue }
-            let ing = Ingredient(amount: r.amount)
-            context.insert(ing)
-            ing.product = p
-            ing.template = t
+        let items: [(product: Product, amount: Double)] = rows.compactMap { r in
+            guard let p = r.product, r.amount > 0 else { return nil }
+            return (product: p, amount: r.amount)
         }
+        t.setIngredients(items, context: context)
         Notifier.evaluate(context)
         dismiss()
     }

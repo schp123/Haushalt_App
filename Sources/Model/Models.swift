@@ -227,14 +227,33 @@ final class MealTemplate {
         self.createdAt = Date()
     }
 
+    /// Zutaten ohne bereits gelöschte Einträge (SwiftData lässt sie kurz in der Liste stehen).
+    var liveIngredients: [Ingredient] { ingredients.filter { !$0.isDeleted } }
+
+    /// Zutaten sicher ersetzen: erst aus der Beziehung lösen, dann löschen.
+    func setIngredients(_ items: [(product: Product, amount: Double)], context: ModelContext) {
+        let old = ingredients
+        ingredients.removeAll()
+        for i in old where !i.isDeleted {
+            i.product = nil
+            context.delete(i)
+        }
+        for item in items {
+            let ing = Ingredient(amount: item.amount)
+            context.insert(ing)
+            ing.product = item.product
+            ing.template = self
+        }
+    }
+
     var nutrition: Nutrition {
-        ingredients.reduce(Nutrition()) { acc, ing in
+        liveIngredients.reduce(Nutrition()) { acc, ing in
             guard let p = ing.product else { return acc }
             return acc + p.nutrition(for: ing.amount)
         }
     }
     var cost: Double {
-        ingredients.reduce(0) { $0 + ($1.product?.cost(for: $1.amount) ?? 0) }
+        liveIngredients.reduce(0) { $0 + ($1.product?.cost(for: $1.amount) ?? 0) }
     }
 }
 

@@ -57,7 +57,7 @@ struct SyncSettingsView: View {
                 Spacer()
                 if engine.isSyncing { ProgressView() }
             }
-            Button("Jetzt abgleichen") { Task { await engine.sync() } }
+            Button("Jetzt abgleichen") { Task { await engine.sync(manual: true) } }
                 .disabled(engine.isSyncing)
         }
 

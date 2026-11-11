@@ -70,7 +70,7 @@ struct Forecast {
             for entry in plan where entry.weekday == iso {
                 if isToday && done.contains(entry.slotRaw) { continue }
                 guard let t = entry.template else { continue }
-                for ing in t.ingredients where ing.product?.persistentModelID == p.persistentModelID {
+                for ing in t.liveIngredients where ing.product?.persistentModelID == p.persistentModelID {
                     total += ing.amount
                 }
             }

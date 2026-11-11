@@ -77,8 +77,8 @@ struct ProductDetailView: View {
                         }
                     }
 
-                    if product.priceHistory.count > 1 {
-                        PriceHistoryView(records: product.priceHistory)
+                    if product.priceHistory.filter({ !$0.isDeleted }).count > 1 {
+                        PriceHistoryView(records: product.priceHistory.filter { !$0.isDeleted })
                     }
 
                     Button("Produkt löschen", role: .destructive) { confirmDelete = true }

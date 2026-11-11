@@ -11,7 +11,7 @@ enum MealLogger {
     static func log(template: MealTemplate, slot: MealSlot, fromPlan: Bool, context: ModelContext, date: Date = Date()) {
         var n = Nutrition()
         var cost = 0.0
-        for ing in template.ingredients {
+        for ing in template.liveIngredients {
             guard let p = ing.product else { continue }
             n = n + p.nutrition(for: ing.amount)
             cost += p.cost(for: ing.amount)

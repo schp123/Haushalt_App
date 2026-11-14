@@ -1,0 +1,36 @@
+{
+  "name": "Kammer",
+  "identifier": "de.egler.kammer.source",
+  "subtitle": "Vorrat, Einkauf & Haushalt",
+  "iconURL": "https://raw.githubusercontent.com/schp123/Haushalt_App/main/Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+  "tintColor": "#2F7D4F",
+  "nsfw": false,
+  "apps": [
+    {
+      "name": "Kammer",
+      "bundleIdentifier": "de.egler.wocheneinkauf",
+      "developerName": "Egler",
+      "subtitle": "Vorrat, Einkauf & Haushalt",
+      "localizedDescription": "Vorrat, REWE-Einkauf, Mahlzeiten, Wunschliste und Haushalt – gemeinsam für zwei.",
+      "iconURL": "https://raw.githubusercontent.com/schp123/Haushalt_App/main/Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "tintColor": "#2F7D4F",
+      "category": "lifestyle",
+      "versions": [
+        {
+          "version": "1.16",
+          "buildVersion": "16",
+          "date": "2026-11-14T12:18:24Z",
+          "localizedDescription": "Neu: Updates direkt über SideStore – Kammer meldet neue Versionen selbst.",
+          "downloadURL": "https://github.com/schp123/Haushalt_App/releases/download/build-16/Kammer.ipa",
+          "size": 1409149,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      }
+    }
+  ],
+  "news": []
+}

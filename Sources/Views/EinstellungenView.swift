@@ -116,6 +116,16 @@ private struct SettingsForm: View {
 
             Section {
                 LabeledContent("Version", value: AppInfo.version)
+                if let v = UpdateChecker.shared.latestVersion, UpdateChecker.shared.latestBuild ?? 0 > UpdateChecker.shared.installedBuild {
+                    Button("Neue Version \(v) – in SideStore öffnen") { UpdateChecker.shared.openSideStore() }
+                } else {
+                    Button("Nach Updates suchen") { Task { await UpdateChecker.shared.check(force: true) } }
+                }
+                Button("Kammer-Quelle in SideStore hinzufügen") { UpdateChecker.shared.addSourceInSideStore() }
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("Einmal pro iPhone die Quelle hinzufügen – danach meldet SideStore neue Versionen und ein Tipp auf „Aktualisieren“ genügt. Falls SideStore sich nicht öffnet, ist die Adresse kopiert: SideStore → Quellen → + → einfügen.")
             }
         }
         .environment(\.locale, Fmt.de)

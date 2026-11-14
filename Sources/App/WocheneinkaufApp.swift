@@ -120,6 +120,7 @@ struct RootView: View {
         .task(id: scenePhase) {
             // Solange die App offen ist: jede Minute Änderungen vom anderen iPhone holen.
             guard scenePhase == .active else { return }
+            await UpdateChecker.shared.check()
             SyncEngine.shared.attach(context)
             Notifier.evaluate(context)
             while !Task.isCancelled {

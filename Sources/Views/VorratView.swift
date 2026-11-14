@@ -46,6 +46,10 @@ struct VorratView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     header
 
+                    if UpdateChecker.shared.updateAvailable {
+                        UpdateBanner()
+                    }
+
                     if reweCount > 0 {
                         cartCard(count: reweCount)
                     }
@@ -394,5 +398,40 @@ struct ReorderView: View {
         let slots = group.map(\.sortIndex).sorted()
         for (i, p) in items.enumerated() { p.sortIndex = slots[i] }
         try? context.save()
+    }
+}
+
+
+// MARK: - Hinweis auf neue Version
+
+struct UpdateBanner: View {
+    private let updates = UpdateChecker.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Neue Version \(updates.latestVersion ?? "") verfügbar").font(.system(size: 15, weight: .bold))
+                    Text(updates.notes?.isEmpty == false ? updates.notes! : "In SideStore unter „Meine Apps“ auf „Aktualisieren“ tippen – eure Daten bleiben erhalten.")
+                        .font(.system(size: 13)).foregroundStyle(Theme.muted)
+                        .lineLimit(4)
+                }
+            }
+            HStack(spacing: 8) {
+                Button("Später") { updates.dismiss() }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.line))
+                Button("In SideStore öffnen") { updates.openSideStore() }
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Theme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+        .card()
     }
 }

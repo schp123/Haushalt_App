@@ -8,11 +8,17 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-ipa
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: XcodeGen installieren
         run: brew install xcodegen
@@ -53,3 +59,54 @@ jobs:
           name: Kammer 1.${{ github.run_number }}
           make_latest: true
           files: Kammer.ipa
+
+      - name: SideStore-Quelle aktualisieren (altsource.json)
+        env:
+          RUN: ${{ github.run_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          export SIZE=$(stat -f%z Kammer.ipa)
+          python3 - <<'PY'
+          import json, os, datetime
+          run = os.environ["RUN"]; repo = os.environ["REPO"]
+          raw = f"https://raw.githubusercontent.com/{repo}/main"
+          try:
+              notes = open("CHANGES.txt", encoding="utf-8").read().strip()
+          except FileNotFoundError:
+              notes = ""
+          source = {
+            "name": "Kammer",
+            "identifier": "de.egler.kammer.source",
+            "subtitle": "Vorrat, Einkauf & Haushalt",
+            "iconURL": f"{raw}/Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+            "tintColor": "#2F7D4F",
+            "nsfw": False,
+            "apps": [{
+              "name": "Kammer",
+              "bundleIdentifier": "de.egler.wocheneinkauf",
+              "developerName": "Egler",
+              "subtitle": "Vorrat, Einkauf & Haushalt",
+              "localizedDescription": "Vorrat, REWE-Einkauf, Mahlzeiten, Wunschliste und Haushalt – gemeinsam für zwei.",
+              "iconURL": f"{raw}/Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+              "tintColor": "#2F7D4F",
+              "category": "lifestyle",
+              "versions": [{
+                "version": f"1.{run}",
+                "buildVersion": run,
+                "date": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "localizedDescription": notes or f"Kammer 1.{run}",
+                "downloadURL": f"https://github.com/{repo}/releases/download/build-{run}/Kammer.ipa",
+                "size": int(os.environ["SIZE"]),
+                "minOSVersion": "17.0"
+              }],
+              "appPermissions": {"entitlements": [], "privacy": {}}
+            }],
+            "news": []
+          }
+          json.dump(source, open("altsource.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add altsource.json
+          git commit -m "SideStore-Quelle: Kammer 1.${RUN} [skip ci]" || exit 0
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done
